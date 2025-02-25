@@ -1,0 +1,350 @@
+Sub SaveVP_SKU_CorrectionAsCSV()
+    Dim wb As Workbook
+    Dim newWb As Workbook
+    Dim ws As Worksheet
+    Dim tbl As ListObject
+    Dim filePath As String
+
+    ' Define file path
+    filePath = "C:\inventory\VP SKU Correction.csv"
+    
+    ' Error handling
+    On Error GoTo ErrorHandler
+    
+    ' Set workbook and table
+    Set wb = ThisWorkbook
+    Set ws = wb.Sheets("FALSE OOS") ' Update to the correct sheet name
+    Set tbl = ws.ListObjects("VP_SKU_Correction") ' Power Query table reference
+    
+    ' Create a new workbook
+    Set newWb = Workbooks.Add
+    
+    ' Copy the table including headers and paste as values into new workbook
+    tbl.Range.Copy
+    With newWb.Sheets(1).Range("A1")
+        .PasteSpecial Paste:=xlPasteValues ' Paste only the values
+    End With
+    
+    ' Save as CSV file, replace if it exists
+    Application.DisplayAlerts = False
+    newWb.SaveAs Filename:=filePath, FileFormat:=xlCSV
+    Application.DisplayAlerts = True
+    
+    ' Close the new workbook
+    newWb.Close SaveChanges:=False
+    
+    ' Success message box
+    MsgBox "VP SKU Correction has been saved as CSV at " & filePath, vbInformation
+
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "An error occurred: " & Err.Description, vbCritical
+    On Error GoTo 0
+End Sub
+Sub SaveVP_OOS_ImportAsCSV()
+    Dim wb As Workbook
+    Dim newWb As Workbook
+    Dim ws As Worksheet
+    Dim tbl As ListObject
+    Dim filePath As String
+
+    ' Define file path
+    filePath = "C:\inventory\VP OOS Import.csv"
+    
+    ' Error handling
+    On Error GoTo ErrorHandler
+    
+    ' Set workbook and table
+    Set wb = ThisWorkbook
+    Set ws = wb.Sheets("Rec OOS") ' Update to the correct sheet name
+    Set tbl = ws.ListObjects("VP_OOS_Import") ' Power Query table reference
+    
+    ' Create a new workbook
+    Set newWb = Workbooks.Add
+    
+    ' Copy the table including headers and paste as values into new workbook
+    tbl.Range.Copy
+    With newWb.Sheets(1).Range("A1")
+        .PasteSpecial Paste:=xlPasteValues ' Paste only the values
+    End With
+    
+    ' Save as CSV file, replace if it exists
+    Application.DisplayAlerts = False
+    newWb.SaveAs Filename:=filePath, FileFormat:=xlCSV
+    Application.DisplayAlerts = True
+    
+    ' Close the new workbook
+    newWb.Close SaveChanges:=False
+    
+    ' Success message box
+    MsgBox "VP OOS Import has been saved as CSV at " & filePath, vbInformation
+
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "An error occurred: " & Err.Description, vbCritical
+    On Error GoTo 0
+End Sub
+Sub Refresh_VP_OOS_Import()
+    Dim ws As Worksheet
+    Dim qryTable As ListObject
+    
+    ' Error handling
+    On Error GoTo ErrorHandler
+    
+    ' Set the worksheet and table
+    Set ws = ThisWorkbook.Sheets("Rec OOS") ' Change to the correct sheet
+    Set qryTable = ws.ListObjects("VP_OOS_Import") ' Power Query table reference
+    
+    ' Refresh the Power Query table
+    qryTable.QueryTable.Refresh BackgroundQuery:=False
+
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "An error occurred while refreshing: " & Err.Description, vbCritical
+    On Error GoTo 0
+End Sub
+Sub Refresh_VP_SKU_Correction()
+    Dim ws As Worksheet
+    Dim qryTable As ListObject
+    
+    ' Error handling
+    On Error GoTo ErrorHandler
+    
+    ' Set the worksheet and table
+    Set ws = ThisWorkbook.Sheets("FALSE OOS") ' Change to the correct sheet
+    Set qryTable = ws.ListObjects("VP_SKU_Correction") ' Power Query table reference
+    
+    ' Refresh the Power Query table
+    qryTable.QueryTable.Refresh BackgroundQuery:=False
+
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "An error occurred while refreshing: " & Err.Description, vbCritical
+    On Error GoTo 0
+End Sub
+Sub CreateInventoryRecapReport()
+    Dim newWorkbook As Workbook
+    Dim sheet1 As Worksheet
+    Dim sheet2 As Worksheet
+    Dim savePath As String
+    Dim currentDate As String
+    Dim ws As Worksheet
+    
+    ' Set references to the sheets you want to copy
+    Set sheet1 = ThisWorkbook.Sheets("Inventory Report")
+    Set sheet2 = ThisWorkbook.Sheets("Receivers")
+
+    ' Create a new workbook
+    Set newWorkbook = Workbooks.Add
+
+    ' Copy the "Inventory Report" sheet into the new workbook
+    sheet1.Copy After:=newWorkbook.Sheets(newWorkbook.Sheets.Count)
+
+    ' Copy the "Receivers" sheet into the new workbook
+    sheet2.Copy After:=newWorkbook.Sheets(newWorkbook.Sheets.Count)
+
+    ' Remove all default sheets from the new workbook
+    Application.DisplayAlerts = False ' Turn off alerts for deleting sheets
+    For Each ws In newWorkbook.Sheets
+        If ws.Name <> "Inventory Report" And ws.Name <> "Receivers" Then
+            ws.Delete
+        End If
+    Next ws
+    Application.DisplayAlerts = True ' Turn alerts back on
+
+    ' Set the save path with current date
+    currentDate = Format(Date, "mm-dd-yy") ' Format date as "Month-Day-year"
+    savePath = "C:\inventory\Load Out Historical\Inventory Recap Report " & currentDate & ".xlsx"
+    
+    ' Save the new workbook
+    newWorkbook.SaveAs Filename:=savePath
+    
+    Sheets("Inventory Report").Select
+    Range("A1").Select
+
+Call PrintActiveSheetToPDF_NoMessage
+
+End Sub
+
+
+Sub PrintActiveSheetToPDF_NoMessage()
+    Dim savePath As String
+    Dim currentDate As String
+
+    ' Set the save path with current date
+    currentDate = Format(Date, "mm-dd-yy") ' Format date as "Month-Day-Year"
+    savePath = "C:\Inventory\Load Out Historical\Inventory Recap Report " & currentDate & ".pdf"
+    
+    ' Export the active sheet as a PDF
+    ActiveSheet.ExportAsFixedFormat Type:=xlTypePDF, Filename:=savePath, Quality:=xlQualityStandard, _
+                                    IncludeDocProperties:=True, IgnorePrintAreas:=False, OpenAfterPublish:=False
+
+End Sub
+
+
+Sub Email_List()
+
+
+    Sheets("Email").Visible = True
+    Sheets("Email").Select
+    Range("B1").Select
+
+End Sub
+Sub Email_List_Close()
+
+    Sheets("Email").Visible = False
+    Sheets("Current Inventory").Select
+    Range("A1").Select
+    
+    Application.DisplayAlerts = False ' Suppress save confirmation dialog
+    ThisWorkbook.Save ' Save the current workbook
+
+End Sub
+Sub Want_To_Email()
+
+Turn_Off_Alerts
+
+Dim response As Integer
+response = MsgBox("Do you want to email this file?", vbYesNo, "Confirm Email")
+If response = vbNo Then Exit Sub
+If response = vbYes Then Call Send_Email
+
+End Sub
+Sub Turn_Off_Alerts()
+
+    'Turn off screen
+    With Application
+    .DisplayAlerts = False
+    .AlertBeforeOverwriting = False
+    .ScreenUpdating = False
+    End With
+
+
+End Sub
+Sub Turn_On_Alerts()
+
+    'Turn off screen
+    With Application
+    .DisplayAlerts = True
+    .AlertBeforeOverwriting = True
+    .ScreenUpdating = True
+    End With
+
+
+End Sub
+Sub screen_off()
+
+'Application.ScreenUpdating = True
+
+   With Application
+.DisplayAlerts = True
+.AlertBeforeOverwriting = True
+.ScreenUpdating = True
+End With
+
+End Sub
+Sub screen_on()
+'Application.ScreenUpdating = False
+'Application.AlertBeforeOverwriting = False
+
+   With Application
+.DisplayAlerts = False
+.AlertBeforeOverwriting = False
+.ScreenUpdating = False
+End With
+
+End Sub
+Sub Send_Email()
+
+    
+    
+   'Setting up the Excel variables.
+   Dim olApp As Object
+   Dim olMailItm As Object
+   Dim iCounter As Integer
+   Dim Dest As Variant
+   Dim SDest As String
+   
+   'Create the Outlook application and the empty email.
+   Set olApp = CreateObject("Outlook.Application")
+   Set olMailItm = olApp.CreateItem(0)
+   
+   Sheets("Email").Visible = True
+   Sheets("Email").Select
+   
+   'Using the email, add multiple recipients, using a list of addresses in column A.
+   With olMailItm
+       SDest = ""
+       For iCounter = 1 To WorksheetFunction.CountA(Columns(1))
+           If SDest = "" Then
+               SDest = Cells(iCounter, 1).Value
+           Else
+               SDest = SDest & ";" & Cells(iCounter, 1).Value
+           End If
+       Next iCounter
+       
+    'Do additional formatting on the BCC and Subject lines, add the body text from the spreadsheet, and send.
+       .To = SDest
+       '.CC = "gabriel.jarrell@pepsico.com"
+       '.Bcc = SDest
+        .Subject = "Inventory Recap Report " & Format(Date, "mm-dd-yy")
+        .Body = "Here is today's Inventory Recap Report."
+        .Attachments.Add ("C:\Inventory\Load Out Historical\Inventory Recap Report " & Format(Date, "mm-dd-yy") & ".pdf")
+        .Attachments.Add ("C:\Inventory\Load Out Historical\Inventory Recap Report " & Format(Date, "mm-dd-yy") & ".xlsx")
+        .Body = .Body & vbLf & vbLf & "The Livingston Warehouse Team"
+        .BodyFormat = 3 ' 1 = Plain Text, 2 = HTML, 3 = Rich Text
+        .GetInspector().WordEditor.Range.ParagraphFormat.Alignment = 0 '0 = Left, 1 = Center, 2 = Right
+       .Display
+       '.send
+   End With
+   
+   'Clean up the Outlook application.
+   Set olMailItm = Nothing
+   Set olApp = Nothing
+   
+    Sheets("Email").Visible = False
+  
+    Sheets("Current Inventory").Select
+    Range("A1").Select
+    'MsgBox "Email sent!", vbInformation, "Success!"
+    
+End Sub
+Sub CreateDirectory()
+
+  ' Declare a FileSystemObject variable
+  Dim fso As Object
+
+  ' Create the FileSystemObject
+  Set fso = CreateObject("Scripting.FileSystemObject")
+
+  ' Define the directory path
+  Dim directoryPath As String
+  directoryPath = "C:\inventory\Load out historical"
+
+  ' Check if the directory already exists
+  If Not fso.FolderExists(directoryPath) Then
+    ' Create the directory
+    fso.CreateFolder (directoryPath)
+    MsgBox "One time Set up complete. Directory created successfully!"
+  Else
+    MsgBox "Directory already exists!"
+  End If
+
+  ' Clean up
+  Set fso = Nothing
+
+End Sub
+Sub Set_Print_Area()
+'
+' Set_Print_Area Macro
+'
+
+'
+    Range("Inventory_Report[#All]").Select
+    ActiveSheet.PageSetup.PrintArea = "Inventory_Report[#All]"
+End Sub
+
