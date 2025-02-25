@@ -1,0 +1,5 @@
+git clone https://github.com/G2geaux/your-repo-name.git
+cd your-repo-name
+git add project_analysis.json
+git commit -m "Add project analysis JSON file"
+git push origin main
