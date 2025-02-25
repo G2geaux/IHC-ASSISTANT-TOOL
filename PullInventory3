@@ -1,0 +1,639 @@
+// SAPUI5 Export
+let
+    Source = Excel.Workbook(File.Contents("C:\Inventory\Materials.xlsx"), null, true),
+    #"SAPUI5 Export_Sheet" = Source{[Item="SAPUI5 Export",Kind="Sheet"]}[Data],
+    #"Promoted Headers1" = Table.PromoteHeaders(#"SAPUI5 Export_Sheet", [PromoteAllScalars=true]),
+    #"Removed Other Columns" = Table.SelectColumns(#"Promoted Headers1",{"Material", "Material Description"})
+in
+    #"Removed Other Columns"
+
+// VP Locations
+let
+    Source = Csv.Document(File.Contents("C:\Inventory\VP Locations.csv"),[Delimiter=",", Columns=9, Encoding=1252, QuoteStyle=QuoteStyle.None]),
+    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
+    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers",{{"Zone", type text}, {"SKU", Int64.Type}, {"Description", type text}, {"Cases", Int64.Type}, {"Picked", Int64.Type}, {"Orders", Int64.Type}, {"Remaining", Int64.Type}, {"UPC", type text}, {"Cases / Order", Int64.Type}}),
+    #"Grouped Rows" = Table.Group(#"Changed Type", {"SKU", "Description", "Remaining"}, {{"Cases", each List.Sum([Cases]), type nullable number}}),
+    #"Sorted Rows" = Table.Sort(#"Grouped Rows",{{"Description", Order.Ascending}}),
+    #"Grouped Rows1" = Table.Group(#"Sorted Rows", {"Description"}, {{"Cases", each List.Sum([Cases]), type nullable number}}),
+    #"Sorted Rows2" = Table.Sort(#"Grouped Rows1",{{"Description", Order.Ascending}}),
+    #"Sorted Rows1" = Table.Sort(#"Sorted Rows2",{{"Description", Order.Ascending}}),
+    #"Merged Queries" = Table.NestedJoin(#"Sorted Rows1", {"Description"}, #"SKU Maintenance Full (26)", {"Product"}, "SKU Maintenance", JoinKind.LeftOuter),
+    #"Expanded SKU Maintenance1" = Table.ExpandTableColumn(#"Merged Queries", "SKU Maintenance", {"SKU"}, {"SKU Maintenance.SKU"})
+in
+    #"Expanded SKU Maintenance1"
+
+// SKU Maintenance
+let
+    Source = Csv.Document(File.Contents("C:\Inventory\SKU Maintenance.csv"),[Delimiter=",", Columns=10, Encoding=1252, QuoteStyle=QuoteStyle.None]),
+    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
+    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers",{{"Location", type text}, {"SKU", Int64.Type}, {"Product", type text}, {"Loc Name", Int64.Type}, {"Spoken Description", type text}, {"Starter Qty", Int64.Type}, {"State", type text}, {"lang_desc", type text}, {"Sequence", Int64.Type}, {"Verification", type text}}),
+    #"Filtered Rows" = Table.SelectRows(#"Changed Type", each ([Location] = "Bulk" or [Location] = "Chilled")),
+    #"Removed Other Columns" = Table.SelectColumns(#"Filtered Rows",{"SKU", "Product", "State"})
+in
+    #"Removed Other Columns"
+
+// Inventory
+let
+    Source = Excel.Workbook(File.Contents("C:\Inventory\Materials.xlsx"), null, true),
+    #"SAPUI5 Export_Sheet" = Source{[Item="SAPUI5 Export",Kind="Sheet"]}[Data],
+    #"Promoted Headers" = Table.PromoteHeaders(#"SAPUI5 Export_Sheet", [PromoteAllScalars=true]),
+    #"Filtered Rows2" = Table.SelectRows(#"Promoted Headers", each not Text.Contains([Batch], "FGDUMMY")),
+    #"Removed Other Columns" = Table.SelectColumns(#"Filtered Rows2",{"Material", "Material Description", "Unrestricted Stock in Alt UoM"}),
+    #"Changed Type" = Table.TransformColumnTypes(#"Removed Other Columns",{{"Material", Int64.Type}, {"Unrestricted Stock in Alt UoM", Int64.Type}}),
+    #"Merged Queries" = Table.NestedJoin(#"Changed Type", {"Material"}, #"Converter (26)", {"SAP Material #"}, "Converter", JoinKind.LeftOuter),
+    #"Expanded Converter" = Table.ExpandTableColumn(#"Merged Queries", "Converter", {"Legacy Inven ID", "SAP Material #"}, {"Converter.Legacy Inven ID", "Converter.SAP Material #"}),
+    #"Merged Queries1" = Table.NestedJoin(#"Expanded Converter", {"Converter.Legacy Inven ID"}, #"SKU Maintenance", {"SKU"}, "SKU Maintenance", JoinKind.LeftOuter),
+    #"Expanded SKU Maintenance" = Table.ExpandTableColumn(#"Merged Queries1", "SKU Maintenance", {"SKU", "Product", "State"}, {"SKU Maintenance.SKU", "SKU Maintenance.Product", "SKU Maintenance.State"}),
+    #"Reordered Columns" = Table.ReorderColumns(#"Expanded SKU Maintenance",{"SKU Maintenance.SKU", "SKU Maintenance.Product", "Material", "Material Description", "Converter.Legacy Inven ID", "Converter.SAP Material #"}),
+    #"Removed Other Columns1" = Table.SelectColumns(#"Reordered Columns",{"SKU Maintenance.SKU", "SKU Maintenance.Product", "Unrestricted Stock in Alt UoM", "Material", "SKU Maintenance.State"}),
+    #"Renamed Columns2" = Table.RenameColumns(#"Removed Other Columns1",{{"Unrestricted Stock in Alt UoM", "Unrestricted Stock"}}),
+    #"Grouped Rows" = Table.Group(#"Renamed Columns2", {"SKU Maintenance.SKU", "SKU Maintenance.Product", "Material", "SKU Maintenance.State"}, {{"On Hand", each List.Sum([Unrestricted Stock]), type nullable number}}),
+    #"Renamed Columns" = Table.RenameColumns(#"Grouped Rows",{{"SKU Maintenance.SKU", "SKU"}, {"SKU Maintenance.Product", "Product"}}),
+    #"Sorted Rows" = Table.Sort(#"Renamed Columns",{{"Product", Order.Ascending}}),
+    #"Filtered Rows" = Table.SelectRows(#"Sorted Rows", each [SKU] <> null and [SKU] <> ""),
+    #"Reordered Columns1" = Table.ReorderColumns(#"Filtered Rows",{"SKU", "Material", "Product", "On Hand", "SKU Maintenance.State"}),
+    #"Duplicated Column" = Table.DuplicateColumn(#"Reordered Columns1", "On Hand", "On Hand - Copy"),
+    #"Reordered Columns2" = Table.ReorderColumns(#"Duplicated Column",{"SKU", "Material", "Product", "On Hand", "On Hand - Copy", "SKU Maintenance.State"}),
+    #"Renamed Columns1" = Table.RenameColumns(#"Reordered Columns2",{{"On Hand - Copy", "Recomeneded State"}}),
+    #"Removed Columns" = Table.RemoveColumns(#"Renamed Columns1",{"Recomeneded State"}),
+    #"Added Conditional Column" = Table.AddColumn(#"Removed Columns", "Recomended State", each if [SKU] = 4504 then "ENABLED" else if [On Hand] <= 0 then "STOCKOUT" else if [On Hand] > 0 then "ENABLED" else null),
+    #"Added Conditional Column1" = Table.AddColumn(#"Added Conditional Column", "Flag", each if [SKU Maintenance.State] = [Recomended State] then "" else if [Recomended State] = "STOCKOUT" then "OOS" else if [On Hand] < 1 then "" else if [SKU Maintenance.State] <> [Recomended State] then "ERR FALSE OSS" else if [SKU Maintenance.State] = "ENABLED" then "" else null),
+    #"Merged Queries2" = Table.NestedJoin(#"Added Conditional Column1", {"Material"}, #"Receivers Today", {"Material"}, "Receivers Today", JoinKind.LeftOuter),
+    #"Expanded Receivers Today" = Table.ExpandTableColumn(#"Merged Queries2", "Receivers Today", {"Delivery Quantity"}, {"Delivery Quantity"}),
+    #"Renamed Columns3" = Table.RenameColumns(#"Expanded Receivers Today",{{"Delivery Quantity", "Inbound Today"}}),
+    #"Merged Queries3" = Table.NestedJoin(#"Renamed Columns3", {"SKU"}, #"VP Locations", {"SKU Maintenance.SKU"}, "VP Locations", JoinKind.LeftOuter),
+    #"Expanded VP Locations" = Table.ExpandTableColumn(#"Merged Queries3", "VP Locations", {"Cases"}, {"VP Locations.Cases"}),
+    #"Reordered Columns3" = Table.ReorderColumns(#"Expanded VP Locations",{"SKU", "Material", "Product", "On Hand", "Inbound Today", "SKU Maintenance.State", "Recomended State", "Flag", "VP Locations.Cases"}),
+    #"Removed Duplicates" = Table.Distinct(#"Reordered Columns3", {"Product", "On Hand"}),
+    #"Renamed Columns4" = Table.RenameColumns(#"Removed Duplicates",{{"VP Locations.Cases", "Cases Sold"}}),
+    #"Reordered Columns4" = Table.ReorderColumns(#"Renamed Columns4",{"SKU", "Material", "Product", "On Hand", "Inbound Today", "Cases Sold", "SKU Maintenance.State", "Recomended State", "Flag"}),
+    #"Merged Queries4" = Table.NestedJoin(#"Reordered Columns4", {"Material"}, #"All Receivers Condensed", {"Material"}, "All Receivers", JoinKind.LeftOuter),
+    #"Expanded All Receivers" = Table.ExpandTableColumn(#"Merged Queries4", "All Receivers", {"Delivery Quantity"}, {"Delivery Quantity"}),
+    #"Reordered Columns5" = Table.ReorderColumns(#"Expanded All Receivers",{"SKU", "Material", "Product", "On Hand", "Inbound Today", "Delivery Quantity", "Cases Sold", "SKU Maintenance.State", "Recomended State", "Flag"}),
+    #"Renamed Columns5" = Table.RenameColumns(#"Reordered Columns5",{{"Delivery Quantity", "All Receivers"}}),
+    #"Reordered Columns6" = Table.ReorderColumns(#"Renamed Columns5",{"SKU", "Material", "Product", "On Hand", "Cases Sold", "Inbound Today", "All Receivers", "SKU Maintenance.State", "Recomended State", "Flag"}),
+    #"Replaced Value" = Table.ReplaceValue(#"Reordered Columns6",null,0,Replacer.ReplaceValue,{"Cases Sold"}),
+    #"Merged Queries5" = Table.NestedJoin(#"Replaced Value", {"SKU"}, #"VP Locations Report", {"SKU Maintenance.SKU"}, "VP Locations Report", JoinKind.LeftOuter),
+    #"Expanded VP Locations Report" = Table.ExpandTableColumn(#"Merged Queries5", "VP Locations Report", {"Remaining Cases"}, {"Remaining Cases"}),
+    #"Reordered Columns7" = Table.ReorderColumns(#"Expanded VP Locations Report",{"SKU", "Material", "Product", "On Hand", "Cases Sold", "Remaining Cases", "Inbound Today", "All Receivers", "SKU Maintenance.State", "Recomended State", "Flag"}),
+    #"Filtered Rows1" = Table.SelectRows(#"Reordered Columns7", each true),
+    #"Removed Duplicates1" = Table.Distinct(#"Filtered Rows1", {"Material"})
+in
+    #"Removed Duplicates1"
+
+// Receivers Today
+let
+    Source = Excel.Workbook(File.Contents("C:\Inventory\Inbound.xlsx"), null, true),
+    Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+    #"Promoted Headers" = Table.PromoteHeaders(Sheet1_Sheet, [PromoteAllScalars=true]),
+    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers",{{"Deliv. date(From/to)", type date}, {"Act. Gds Mvmnt Date", type any}, {"Goods Issue Time", type datetime}, {"Goods receipt date", type any}, {"Goods Movement Sts", type text}, {"Supplier Name", type text}, {"Purchasing Document", Int64.Type}, {"Delivery", Int64.Type}, {"Item", Int64.Type}, {"Material", Int64.Type}, {"Item Description", type text}, {"Delivery Quantity", Int64.Type}, {"Sales unit", type text}, {"Created By", type text}, {"Freight Order", type text}, {"Goods Movement Sts_1", type text}, {"Plant", Int64.Type}, {"Supplier", Int64.Type}, {"Supplier Location", type text}}),
+    #"Filtered Rows" = Table.SelectRows(#"Changed Type", each [Goods Movement Sts] = "A"),
+    #"Removed Other Columns" = Table.SelectColumns(#"Filtered Rows",{"Deliv. date(From/to)", "Goods Movement Sts", "Supplier Name", "Purchasing Document", "Material", "Item Description", "Delivery Quantity", "Plant", "Supplier", "Supplier Location"}),
+    #"Sorted Rows" = Table.Sort(#"Removed Other Columns",{{"Purchasing Document", Order.Ascending}}),
+    #"Filtered Rows1" = Table.SelectRows(#"Sorted Rows", each Date.IsInCurrentDay([#"Deliv. date(From/to)"])),
+    #"Grouped Rows" = Table.Group(#"Filtered Rows1", {"Material", "Item Description"}, {{"Delivery Quantity", each List.Sum([Delivery Quantity]), type nullable number}})
+in
+    #"Grouped Rows"
+
+// All Receivers Condensed
+let
+    Source = Excel.Workbook(File.Contents("C:\Inventory\Inbound.xlsx"), null, true),
+    Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+    #"Promoted Headers" = Table.PromoteHeaders(Sheet1_Sheet, [PromoteAllScalars=true]),
+    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers",{{"Deliv. date(From/to)", type date}, {"Act. Gds Mvmnt Date", type any}, {"Goods Issue Time", type datetime}, {"Goods receipt date", type any}, {"Goods Movement Sts", type text}, {"Supplier Name", type text}, {"Purchasing Document", Int64.Type}, {"Delivery", Int64.Type}, {"Item", Int64.Type}, {"Material", Int64.Type}, {"Item Description", type text}, {"Delivery Quantity", Int64.Type}, {"Sales unit", type text}, {"Created By", type text}, {"Freight Order", type text}, {"Goods Movement Sts_1", type text}, {"Plant", Int64.Type},  {"Supplier Location", type text}}),
+    #"Filtered Rows" = Table.SelectRows(#"Changed Type", each [Goods Movement Sts] = "A"),
+    #"Removed Other Columns" = Table.SelectColumns(#"Filtered Rows",{"Deliv. date(From/to)", "Goods Movement Sts", "Supplier Name", "Purchasing Document", "Material", "Item Description", "Delivery Quantity", "Plant", "Supplier Location"}),
+    #"Sorted Rows" = Table.Sort(#"Removed Other Columns",{{"Purchasing Document", Order.Ascending}}),
+    #"Reordered Columns" = Table.ReorderColumns(#"Sorted Rows",{"Deliv. date(From/to)", "Purchasing Document", "Material", "Item Description", "Delivery Quantity", "Supplier Name", "Plant", "Goods Movement Sts",  "Supplier Location"}),
+    #"Merged Queries" = Table.NestedJoin(#"Reordered Columns", {"Material"}, #"Converter (26)", {"SAP Material #"}, "Converter", JoinKind.LeftOuter),
+    #"Expanded Converter" = Table.ExpandTableColumn(#"Merged Queries", "Converter", {"Legacy Inven ID"}, {"Converter.Legacy Inven ID"}),
+    #"Merged Queries1" = Table.NestedJoin(#"Expanded Converter", {"Converter.Legacy Inven ID"}, #"SKU Maintenance Full (26)", {"SKU"}, "SKU Maintenance Full", JoinKind.LeftOuter),
+    #"Expanded SKU Maintenance Full" = Table.ExpandTableColumn(#"Merged Queries1", "SKU Maintenance Full", {"Product"}, {"SKU Maintenance Full.Product"}),
+    #"Renamed Columns" = Table.RenameColumns(#"Expanded SKU Maintenance Full",{{"SKU Maintenance Full.Product", "Product"}, {"Converter.Legacy Inven ID", "SKU"}}),
+    #"Reordered Columns1" = Table.ReorderColumns(#"Renamed Columns",{"Deliv. date(From/to)", "Purchasing Document", "SKU", "Product", "Material", "Item Description", "Delivery Quantity", "Supplier Name", "Plant", "Goods Movement Sts",  "Supplier Location"}),
+    #"Renamed Columns1" = Table.RenameColumns(#"Reordered Columns1",{{"Deliv. date(From/to)", "Deliv. date"}}),
+    #"Removed Other Columns1" = Table.SelectColumns(#"Renamed Columns1",{"Deliv. date", "Purchasing Document", "SKU", "Product", "Material", "Item Description", "Delivery Quantity", "Supplier Name"}),
+    #"Grouped Rows" = Table.Group(#"Removed Other Columns1", {"SKU", "Material", "Item Description"}, {{"Delivery Quantity", each List.Sum([Delivery Quantity]), type nullable number}})
+in
+    #"Grouped Rows"
+
+// VP Locations Report
+let
+    Source = Csv.Document(File.Contents("C:\Inventory\VP Locations.csv"),[Delimiter=",", Columns=9, Encoding=1252, QuoteStyle=QuoteStyle.None]),
+    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
+    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers",{{"Zone", type text}, {"SKU", Int64.Type}, {"Description", type text}, {"Cases", Int64.Type}, {"Picked", Int64.Type}, {"Orders", Int64.Type}, {"Remaining", Int64.Type}, {"UPC", type text}, {"Cases / Order", Int64.Type}}),
+    #"Grouped Rows" = Table.Group(#"Changed Type", {"SKU", "Description", "Remaining"}, {{"Cases", each List.Sum([Cases]), type nullable number}}),
+    #"Sorted Rows" = Table.Sort(#"Grouped Rows",{{"Description", Order.Ascending}}),
+    #"Grouped Rows1" = Table.Group(#"Sorted Rows", {"Description"}, {{"Cases", each List.Sum([Cases]), type nullable number}, {"Remaining Cases", each List.Sum([Remaining]), type nullable number}}),
+    #"Sorted Rows2" = Table.Sort(#"Grouped Rows1",{{"Description", Order.Ascending}}),
+    #"Sorted Rows1" = Table.Sort(#"Sorted Rows2",{{"Description", Order.Ascending}}),
+    #"Merged Queries" = Table.NestedJoin(#"Sorted Rows1", {"Description"}, #"SKU Maintenance Full (26)", {"Product"}, "SKU Maintenance", JoinKind.LeftOuter),
+    #"Expanded SKU Maintenance1" = Table.ExpandTableColumn(#"Merged Queries", "SKU Maintenance", {"SKU"}, {"SKU Maintenance.SKU"})
+in
+    #"Expanded SKU Maintenance1"
+
+// FALSE OOS
+let
+    Source = Inventory,
+    #"Removed Duplicates" = Table.Distinct(Source, {"SKU", "On Hand", "Product", "Material"}),
+    #"Filtered Rows" = Table.SelectRows(#"Removed Duplicates", each [Flag] = "ERR FALSE OSS"),
+    #"Sorted Rows" = Table.Sort(#"Filtered Rows",{{"On Hand", Order.Descending}}),
+    #"Removed Other Columns" = Table.SelectColumns(#"Sorted Rows",{"SKU", "Material", "Product", "On Hand", "Cases Sold", "Remaining Cases", "Inbound Today", "SKU Maintenance.State", "Recomended State", "Flag"})
+in
+    #"Removed Other Columns"
+
+// VP SKU Correction
+let
+    Source = #"FALSE OOS",
+    #"Removed Other Columns" = Table.SelectColumns(Source,{"SKU"}),
+    #"Merged Queries" = Table.NestedJoin(#"Removed Other Columns", {"SKU"}, #"SKU Maintenance Full (26)", {"SKU"}, "SKU Maintenance Full", JoinKind.LeftOuter),
+    #"Removed Columns" = Table.RemoveColumns(#"Merged Queries",{"SKU"}),
+    #"Expanded SKU Maintenance Full" = Table.ExpandTableColumn(#"Removed Columns", "SKU Maintenance Full", {"Location", "SKU", "Product", "Loc Name", "Spoken Description", "Starter Qty", "State", "lang_desc", "Sequence", "Verification"}, {"Location", "SKU", "Product", "Loc Name", "Spoken Description", "Starter Qty", "State", "lang_desc", "Sequence", "Verification"}),
+    #"Merged Queries1" = Table.NestedJoin(#"Expanded SKU Maintenance Full", {"SKU"}, EXCEPTIONS, {"Exceptions"}, "EXCEPTIONS", JoinKind.LeftOuter),
+    #"Expanded EXCEPTIONS" = Table.ExpandTableColumn(#"Merged Queries1", "EXCEPTIONS", {"Exceptions"}, {"EXCEPTIONS.Exceptions"}),
+    #"Filtered Rows" = Table.SelectRows(#"Expanded EXCEPTIONS", each ([EXCEPTIONS.Exceptions] = null)),
+    #"Removed Columns1" = Table.RemoveColumns(#"Filtered Rows",{"EXCEPTIONS.Exceptions"})
+in
+    #"Removed Columns1"
+
+// EXCEPTIONS
+let
+    Source = Excel.CurrentWorkbook(){[Name="Table2"]}[Content],
+    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Exceptions", Int64.Type}})
+in
+    #"Changed Type"
+
+// All Receivers
+let
+    Source = Excel.Workbook(File.Contents("C:\Inventory\Inbound.xlsx"), null, true),
+    Sheet1_Sheet = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+    #"Promoted Headers" = Table.PromoteHeaders(Sheet1_Sheet, [PromoteAllScalars=true]),
+    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers",{{"Deliv. date(From/to)", type date}, {"Act. Gds Mvmnt Date", type any}, {"Goods Issue Time", type datetime}, {"Goods receipt date", type any}, {"Goods Movement Sts", type text}, {"Supplier Name", type text}, {"Purchasing Document", Int64.Type}, {"Delivery", Int64.Type}, {"Item", Int64.Type}, {"Material", Int64.Type}, {"Item Description", type text}, {"Delivery Quantity", Int64.Type}, {"Sales unit", type text}, {"Created By", type text}, {"Freight Order", type text}, {"Goods Movement Sts_1", type text}, {"Plant", Int64.Type},  {"Supplier Location", type text}}),
+    #"Filtered Rows" = Table.SelectRows(#"Changed Type", each [Goods Movement Sts] = "A"),
+    #"Removed Other Columns" = Table.SelectColumns(#"Filtered Rows",{"Deliv. date(From/to)", "Goods Movement Sts", "Supplier Name", "Purchasing Document", "Material", "Item Description", "Delivery Quantity", "Plant", "Supplier Location"}),
+    #"Sorted Rows" = Table.Sort(#"Removed Other Columns",{{"Purchasing Document", Order.Ascending}}),
+    #"Reordered Columns" = Table.ReorderColumns(#"Sorted Rows",{"Deliv. date(From/to)", "Purchasing Document", "Material", "Item Description", "Delivery Quantity", "Supplier Name", "Plant", "Goods Movement Sts",  "Supplier Location"}),
+    #"Merged Queries" = Table.NestedJoin(#"Reordered Columns", {"Material"}, #"Converter (26)", {"SAP Material #"}, "Converter", JoinKind.LeftOuter),
+    #"Expanded Converter" = Table.ExpandTableColumn(#"Merged Queries", "Converter", {"Legacy Inven ID"}, {"Converter.Legacy Inven ID"}),
+    #"Merged Queries1" = Table.NestedJoin(#"Expanded Converter", {"Converter.Legacy Inven ID"}, #"SKU Maintenance Full (26)", {"SKU"}, "SKU Maintenance Full", JoinKind.LeftOuter),
+    #"Expanded SKU Maintenance Full" = Table.ExpandTableColumn(#"Merged Queries1", "SKU Maintenance Full", {"Product"}, {"SKU Maintenance Full.Product"}),
+    #"Renamed Columns" = Table.RenameColumns(#"Expanded SKU Maintenance Full",{{"SKU Maintenance Full.Product", "Product"}, {"Converter.Legacy Inven ID", "SKU"}}),
+    #"Reordered Columns1" = Table.ReorderColumns(#"Renamed Columns",{"Deliv. date(From/to)", "Purchasing Document", "SKU", "Product", "Material", "Item Description", "Delivery Quantity", "Supplier Name", "Plant", "Goods Movement Sts",  "Supplier Location"}),
+    #"Renamed Columns1" = Table.RenameColumns(#"Reordered Columns1",{{"Deliv. date(From/to)", "Deliv. date"}}),
+    #"Removed Other Columns1" = Table.SelectColumns(#"Renamed Columns1",{"Deliv. date", "Purchasing Document", "SKU", "Product", "Material", "Item Description", "Delivery Quantity", "Supplier Name"})
+in
+    #"Removed Other Columns1"
+
+// Recommended VP OOS
+let
+    Source = Inventory,
+    #"Replaced Value" = Table.ReplaceValue(Source,4504,null,Replacer.ReplaceValue,{"SKU"}),
+    #"Filtered Rows" = Table.SelectRows(#"Replaced Value", each ([SKU] <> null)),
+    #"Filtered Rows1" = Table.SelectRows(#"Filtered Rows", each [On Hand] < 1),
+    #"Removed Other Columns" = Table.SelectColumns(#"Filtered Rows1",{"SKU"}),
+    #"Merged Queries" = Table.NestedJoin(#"Removed Other Columns", {"SKU"}, #"SKU Maintenance Full (26)", {"SKU"}, "SKU Maintenance Full", JoinKind.LeftOuter),
+    #"Expanded SKU Maintenance Full" = Table.ExpandTableColumn(#"Merged Queries", "SKU Maintenance Full", {"Location", "SKU", "Product", "Loc Name", "Spoken Description", "Starter Qty", "State", "lang_desc", "Sequence", "Verification"}, {"Location", "SKU.1", "Product", "Loc Name", "Spoken Description", "Starter Qty", "State", "lang_desc", "Sequence", "Verification"}),
+    #"Removed Columns" = Table.RemoveColumns(#"Expanded SKU Maintenance Full",{"SKU"}),
+    #"Replaced Value1" = Table.ReplaceValue(#"Removed Columns","ENABLED","STOCKOUT",Replacer.ReplaceText,{"State"})
+in
+    #"Replaced Value1"
+
+// VP OOS
+let
+    Source = Inventory,
+    #"Filtered Rows" = Table.SelectRows(Source, each [Flag] = "OOS"),
+    #"Sorted Rows" = Table.Sort(#"Filtered Rows",{{"On Hand", Order.Descending}}),
+    #"Removed Other Columns" = Table.SelectColumns(#"Sorted Rows",{"SKU", "Material", "Product", "On Hand", "Cases Sold", "Remaining Cases", "Inbound Today", "SKU Maintenance.State", "Recomended State", "Flag"}),
+    #"Filtered Rows1" = Table.SelectRows(#"Removed Other Columns", each ([Cases Sold] <> 0))
+in
+    #"Filtered Rows1"
+
+// ExceptionsStandard
+let
+    Source = Excel.CurrentWorkbook(){[Name="Table8"]}[Content],
+    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Exeptions", type any}})
+in
+    #"Changed Type"
+
+// VP OOS Import
+let
+    Source = #"VP OOS",
+    #"Merged Queries" = Table.NestedJoin(Source, {"SKU"}, ExceptionsStandard, {"Exeptions"}, "ExceptionsStandard", JoinKind.LeftOuter),
+    #"Expanded ExceptionsStandard" = Table.ExpandTableColumn(#"Merged Queries", "ExceptionsStandard", {"Exeptions"}, {"Exeptions"}),
+    #"Filtered Rows" = Table.SelectRows(#"Expanded ExceptionsStandard", each ([Exeptions] = null)),
+    #"Removed Other Columns" = Table.SelectColumns(#"Filtered Rows",{"SKU"}),
+    #"Merged Queries1" = Table.NestedJoin(#"Removed Other Columns", {"SKU"}, #"SKU Maintenance Full (26)", {"SKU"}, "SKU Maintenance Full", JoinKind.LeftOuter),
+    #"Removed Columns" = Table.RemoveColumns(#"Merged Queries1",{"SKU"}),
+    #"Expanded SKU Maintenance Full" = Table.ExpandTableColumn(#"Removed Columns", "SKU Maintenance Full", {"Location", "SKU", "Product", "Loc Name", "Spoken Description", "Starter Qty", "State", "lang_desc", "Sequence", "Verification"}, {"Location", "SKU", "Product", "Loc Name", "Spoken Description", "Starter Qty", "State", "lang_desc", "Sequence", "Verification"}),
+    #"Sorted Rows" = Table.Sort(#"Expanded SKU Maintenance Full",{{"Sequence", Order.Ascending}}),
+    #"Replaced Value" = Table.ReplaceValue(#"Sorted Rows","ENABLED","STOCKOUT",Replacer.ReplaceText,{"State"}),
+    #"Filtered Rows1" = Table.SelectRows(#"Replaced Value", each ([Location] <> "Chilled"))
+in
+    #"Filtered Rows1"
+
+// Missing Material #
+let
+    Source = #"SKU Maintenance Full (26)",
+    #"Merged Queries" = Table.NestedJoin(Source, {"SKU"}, #"Converter (26)", {"Legacy Inven ID"}, "Converter", JoinKind.LeftOuter),
+    #"Expanded Converter" = Table.ExpandTableColumn(#"Merged Queries", "Converter", {"SAP Material #"}, {"Converter.SAP Material #"}),
+    #"Reordered Columns" = Table.ReorderColumns(#"Expanded Converter",{"Location", "SKU", "Converter.SAP Material #", "Product", "Loc Name", "Spoken Description", "Starter Qty", "State", "lang_desc", "Sequence", "Verification"}),
+    #"Filtered Rows" = Table.SelectRows(#"Reordered Columns", each ([#"Converter.SAP Material #"] = null)),
+    #"Removed Other Columns" = Table.SelectColumns(#"Filtered Rows",{"Location", "SKU", "Converter.SAP Material #", "Product", "Loc Name"}),
+    #"Filtered Rows1" = Table.SelectRows(#"Removed Other Columns", each ([Location] = "Bulk" or [Location] = "Chilled"))
+in
+    #"Filtered Rows1"
+
+// Missing Converter
+let
+    Source = Excel.Workbook(File.Contents("C:\Inventory\Materials.xlsx"), null, true),
+    #"SAPUI5 Export_Sheet" = Source{[Item="SAPUI5 Export",Kind="Sheet"]}[Data],
+    #"Promoted Headers" = Table.PromoteHeaders(#"SAPUI5 Export_Sheet", [PromoteAllScalars=true]),
+    #"Removed Other Columns" = Table.SelectColumns(#"Promoted Headers",{"Material", "Material Description", "Unrestricted Stock in Alt UoM"}),
+    #"Changed Type" = Table.TransformColumnTypes(#"Removed Other Columns",{{"Material", Int64.Type}, {"Unrestricted Stock in Alt UoM", Int64.Type}}),
+    #"Merged Queries" = Table.NestedJoin(#"Changed Type", {"Material"}, #"Converter (26)", {"SAP Material #"}, "Converter", JoinKind.LeftOuter),
+    #"Expanded Converter" = Table.ExpandTableColumn(#"Merged Queries", "Converter", {"Legacy Inven ID", "SAP Material #"}, {"Converter.Legacy Inven ID", "Converter.SAP Material #"}),
+    #"Merged Queries1" = Table.NestedJoin(#"Expanded Converter", {"Converter.Legacy Inven ID"}, #"SKU Maintenance", {"SKU"}, "SKU Maintenance", JoinKind.LeftOuter),
+    #"Expanded SKU Maintenance" = Table.ExpandTableColumn(#"Merged Queries1", "SKU Maintenance", {"SKU", "Product", "State"}, {"SKU Maintenance.SKU", "SKU Maintenance.Product", "SKU Maintenance.State"}),
+    #"Reordered Columns" = Table.ReorderColumns(#"Expanded SKU Maintenance",{"SKU Maintenance.SKU", "SKU Maintenance.Product", "Material", "Material Description", "Converter.Legacy Inven ID", "Converter.SAP Material #"}),
+    #"Filtered Rows" = Table.SelectRows(#"Reordered Columns", each ([SKU Maintenance.SKU] = null)),
+    #"Sorted Rows" = Table.Sort(#"Filtered Rows",{{"Unrestricted Stock in Alt UoM", Order.Descending}}),
+    #"Reordered Columns1" = Table.ReorderColumns(#"Sorted Rows",{"Converter.Legacy Inven ID", "Converter.SAP Material #", "Material", "Material Description", "Unrestricted Stock in Alt UoM"}),
+    #"Filtered Rows1" = Table.SelectRows(#"Reordered Columns1", each ([Converter.Legacy Inven ID] = null)),
+    #"Removed Other Columns1" = Table.SelectColumns(#"Filtered Rows1",{"Material", "Material Description", "Unrestricted Stock in Alt UoM"}),
+    #"Merged Queries2" = Table.NestedJoin(#"Removed Other Columns1", {"Material Description"}, #"Missing Material #", {"Product"}, "Missing Material #", JoinKind.LeftOuter)
+in
+    #"Merged Queries2"
+
+// Inventory Report
+let
+    Source = Inventory,
+    #"Merged Queries" = Table.NestedJoin(Source, {"SKU"}, DIA, {"Inventory ID"}, "DIA", JoinKind.LeftOuter),
+    #"Expanded DIA" = Table.ExpandTableColumn(#"Merged Queries", "DIA", {"Package", "Trademark", "Item", "Inventory ID"}, {"Package", "Trademark", "Item", "Inventory ID"}),
+    #"Removed Other Columns" = Table.SelectColumns(#"Expanded DIA",{"SKU", "Material", "Product", "On Hand", "Cases Sold", "Inbound Today", "All Receivers", "Package", "Trademark", "Item"}),
+    #"Merged Queries1" = Table.NestedJoin(#"Removed Other Columns", {"SKU"}, #"VP Locations Report", {"SKU Maintenance.SKU"}, "VP Locations Report", JoinKind.LeftOuter),
+    #"Expanded VP Locations Report" = Table.ExpandTableColumn(#"Merged Queries1", "VP Locations Report", {"Remaining Cases"}, {"Remaining Cases"}),
+    #"Replaced Value" = Table.ReplaceValue(#"Expanded VP Locations Report",null,0,Replacer.ReplaceValue,{"Remaining Cases"}),
+    #"Added Custom" = Table.AddColumn(#"Replaced Value", "+/-", each [On Hand]-[Remaining Cases]),
+    #"Reordered Columns" = Table.ReorderColumns(#"Added Custom",{"SKU", "Material", "Product", "On Hand", "Cases Sold", "+/-", "Inbound Today", "All Receivers", "Package", "Trademark", "Item"}),
+    #"Filtered Rows" = Table.SelectRows(#"Reordered Columns", each ([SKU] <> 4504)),
+    #"Removed Duplicates" = Table.Distinct(#"Filtered Rows", {"Product", "On Hand"}),
+    #"Removed Columns" = Table.RemoveColumns(#"Removed Duplicates",{"Remaining Cases"})
+in
+    #"Removed Columns"
+
+// DIA
+let
+    Source = Excel.CurrentWorkbook(){[Name="Table19"]}[Content],
+    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Package", type text}, {"Trademark", type text}, {"Item", type text}, {"Inventory ID", Int64.Type}})
+in
+    #"Changed Type"
+Sub SaveVP_SKU_CorrectionAsCSV()
+    Dim wb As Workbook
+    Dim newWb As Workbook
+    Dim ws As Worksheet
+    Dim tbl As ListObject
+    Dim filePath As String
+
+    ' Define file path
+    filePath = "C:\inventory\VP SKU Correction.csv"
+    
+    ' Error handling
+    On Error GoTo ErrorHandler
+    
+    ' Set workbook and table
+    Set wb = ThisWorkbook
+    Set ws = wb.Sheets("FALSE OOS") ' Update to the correct sheet name
+    Set tbl = ws.ListObjects("VP_SKU_Correction") ' Power Query table reference
+    
+    ' Create a new workbook
+    Set newWb = Workbooks.Add
+    
+    ' Copy the table including headers and paste as values into new workbook
+    tbl.Range.Copy
+    With newWb.Sheets(1).Range("A1")
+        .PasteSpecial Paste:=xlPasteValues ' Paste only the values
+    End With
+    
+    ' Save as CSV file, replace if it exists
+    Application.DisplayAlerts = False
+    newWb.SaveAs Filename:=filePath, FileFormat:=xlCSV
+    Application.DisplayAlerts = True
+    
+    ' Close the new workbook
+    newWb.Close SaveChanges:=False
+    
+    ' Success message box
+    MsgBox "VP SKU Correction has been saved as CSV at " & filePath, vbInformation
+
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "An error occurred: " & Err.Description, vbCritical
+    On Error GoTo 0
+End Sub
+Sub SaveVP_OOS_ImportAsCSV()
+    Dim wb As Workbook
+    Dim newWb As Workbook
+    Dim ws As Worksheet
+    Dim tbl As ListObject
+    Dim filePath As String
+
+    ' Define file path
+    filePath = "C:\inventory\VP OOS Import.csv"
+    
+    ' Error handling
+    On Error GoTo ErrorHandler
+    
+    ' Set workbook and table
+    Set wb = ThisWorkbook
+    Set ws = wb.Sheets("Rec OOS") ' Update to the correct sheet name
+    Set tbl = ws.ListObjects("VP_OOS_Import") ' Power Query table reference
+    
+    ' Create a new workbook
+    Set newWb = Workbooks.Add
+    
+    ' Copy the table including headers and paste as values into new workbook
+    tbl.Range.Copy
+    With newWb.Sheets(1).Range("A1")
+        .PasteSpecial Paste:=xlPasteValues ' Paste only the values
+    End With
+    
+    ' Save as CSV file, replace if it exists
+    Application.DisplayAlerts = False
+    newWb.SaveAs Filename:=filePath, FileFormat:=xlCSV
+    Application.DisplayAlerts = True
+    
+    ' Close the new workbook
+    newWb.Close SaveChanges:=False
+    
+    ' Success message box
+    MsgBox "VP OOS Import has been saved as CSV at " & filePath, vbInformation
+
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "An error occurred: " & Err.Description, vbCritical
+    On Error GoTo 0
+End Sub
+Sub Refresh_VP_OOS_Import()
+    Dim ws As Worksheet
+    Dim qryTable As ListObject
+    
+    ' Error handling
+    On Error GoTo ErrorHandler
+    
+    ' Set the worksheet and table
+    Set ws = ThisWorkbook.Sheets("Rec OOS") ' Change to the correct sheet
+    Set qryTable = ws.ListObjects("VP_OOS_Import") ' Power Query table reference
+    
+    ' Refresh the Power Query table
+    qryTable.QueryTable.Refresh BackgroundQuery:=False
+
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "An error occurred while refreshing: " & Err.Description, vbCritical
+    On Error GoTo 0
+End Sub
+Sub Refresh_VP_SKU_Correction()
+    Dim ws As Worksheet
+    Dim qryTable As ListObject
+    
+    ' Error handling
+    On Error GoTo ErrorHandler
+    
+    ' Set the worksheet and table
+    Set ws = ThisWorkbook.Sheets("FALSE OOS") ' Change to the correct sheet
+    Set qryTable = ws.ListObjects("VP_SKU_Correction") ' Power Query table reference
+    
+    ' Refresh the Power Query table
+    qryTable.QueryTable.Refresh BackgroundQuery:=False
+
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "An error occurred while refreshing: " & Err.Description, vbCritical
+    On Error GoTo 0
+End Sub
+Sub CreateInventoryRecapReport()
+    Dim newWorkbook As Workbook
+    Dim sheet1 As Worksheet
+    Dim sheet2 As Worksheet
+    Dim savePath As String
+    Dim currentDate As String
+    Dim ws As Worksheet
+    
+    ' Set references to the sheets you want to copy
+    Set sheet1 = ThisWorkbook.Sheets("Inventory Report")
+    Set sheet2 = ThisWorkbook.Sheets("Receivers")
+
+    ' Create a new workbook
+    Set newWorkbook = Workbooks.Add
+
+    ' Copy the "Inventory Report" sheet into the new workbook
+    sheet1.Copy After:=newWorkbook.Sheets(newWorkbook.Sheets.Count)
+
+    ' Copy the "Receivers" sheet into the new workbook
+    sheet2.Copy After:=newWorkbook.Sheets(newWorkbook.Sheets.Count)
+
+    ' Remove all default sheets from the new workbook
+    Application.DisplayAlerts = False ' Turn off alerts for deleting sheets
+    For Each ws In newWorkbook.Sheets
+        If ws.Name <> "Inventory Report" And ws.Name <> "Receivers" Then
+            ws.Delete
+        End If
+    Next ws
+    Application.DisplayAlerts = True ' Turn alerts back on
+
+    ' Set the save path with current date
+    currentDate = Format(Date, "mm-dd-yy") ' Format date as "Month-Day-year"
+    savePath = "C:\inventory\Load Out Historical\Inventory Recap Report " & currentDate & ".xlsx"
+    
+    ' Save the new workbook
+    newWorkbook.SaveAs Filename:=savePath
+    
+    Sheets("Inventory Report").Select
+    Range("A1").Select
+
+Call PrintActiveSheetToPDF_NoMessage
+
+End Sub
+
+
+Sub PrintActiveSheetToPDF_NoMessage()
+    Dim savePath As String
+    Dim currentDate As String
+
+    ' Set the save path with current date
+    currentDate = Format(Date, "mm-dd-yy") ' Format date as "Month-Day-Year"
+    savePath = "C:\Inventory\Load Out Historical\Inventory Recap Report " & currentDate & ".pdf"
+    
+    ' Export the active sheet as a PDF
+    ActiveSheet.ExportAsFixedFormat Type:=xlTypePDF, Filename:=savePath, Quality:=xlQualityStandard, _
+                                    IncludeDocProperties:=True, IgnorePrintAreas:=False, OpenAfterPublish:=False
+
+End Sub
+
+
+Sub Email_List()
+
+
+    Sheets("Email").Visible = True
+    Sheets("Email").Select
+    Range("B1").Select
+
+End Sub
+Sub Email_List_Close()
+
+    Sheets("Email").Visible = False
+    Sheets("Current Inventory").Select
+    Range("A1").Select
+    
+    Application.DisplayAlerts = False ' Suppress save confirmation dialog
+    ThisWorkbook.Save ' Save the current workbook
+
+End Sub
+Sub Want_To_Email()
+
+Turn_Off_Alerts
+
+Dim response As Integer
+response = MsgBox("Do you want to email this file?", vbYesNo, "Confirm Email")
+If response = vbNo Then Exit Sub
+If response = vbYes Then Call Send_Email
+
+End Sub
+Sub Turn_Off_Alerts()
+
+    'Turn off screen
+    With Application
+    .DisplayAlerts = False
+    .AlertBeforeOverwriting = False
+    .ScreenUpdating = False
+    End With
+
+
+End Sub
+Sub Turn_On_Alerts()
+
+    'Turn off screen
+    With Application
+    .DisplayAlerts = True
+    .AlertBeforeOverwriting = True
+    .ScreenUpdating = True
+    End With
+
+
+End Sub
+Sub screen_off()
+
+'Application.ScreenUpdating = True
+
+   With Application
+.DisplayAlerts = True
+.AlertBeforeOverwriting = True
+.ScreenUpdating = True
+End With
+
+End Sub
+Sub screen_on()
+'Application.ScreenUpdating = False
+'Application.AlertBeforeOverwriting = False
+
+   With Application
+.DisplayAlerts = False
+.AlertBeforeOverwriting = False
+.ScreenUpdating = False
+End With
+
+End Sub
+Sub Send_Email()
+
+    
+    
+   'Setting up the Excel variables.
+   Dim olApp As Object
+   Dim olMailItm As Object
+   Dim iCounter As Integer
+   Dim Dest As Variant
+   Dim SDest As String
+   
+   'Create the Outlook application and the empty email.
+   Set olApp = CreateObject("Outlook.Application")
+   Set olMailItm = olApp.CreateItem(0)
+   
+   Sheets("Email").Visible = True
+   Sheets("Email").Select
+   
+   'Using the email, add multiple recipients, using a list of addresses in column A.
+   With olMailItm
+       SDest = ""
+       For iCounter = 1 To WorksheetFunction.CountA(Columns(1))
+           If SDest = "" Then
+               SDest = Cells(iCounter, 1).Value
+           Else
+               SDest = SDest & ";" & Cells(iCounter, 1).Value
+           End If
+       Next iCounter
+       
+    'Do additional formatting on the BCC and Subject lines, add the body text from the spreadsheet, and send.
+       .To = SDest
+       '.CC = "gabriel.jarrell@pepsico.com"
+       '.Bcc = SDest
+        .Subject = "Inventory Recap Report " & Format(Date, "mm-dd-yy")
+        .Body = "Here is today's Inventory Recap Report."
+        .Attachments.Add ("C:\Inventory\Load Out Historical\Inventory Recap Report " & Format(Date, "mm-dd-yy") & ".pdf")
+        .Attachments.Add ("C:\Inventory\Load Out Historical\Inventory Recap Report " & Format(Date, "mm-dd-yy") & ".xlsx")
+        .Body = .Body & vbLf & vbLf & "The Livingston Warehouse Team"
+        .BodyFormat = 3 ' 1 = Plain Text, 2 = HTML, 3 = Rich Text
+        .GetInspector().WordEditor.Range.ParagraphFormat.Alignment = 0 '0 = Left, 1 = Center, 2 = Right
+       .Display
+       '.send
+   End With
+   
+   'Clean up the Outlook application.
+   Set olMailItm = Nothing
+   Set olApp = Nothing
+   
+    Sheets("Email").Visible = False
+  
+    Sheets("Current Inventory").Select
+    Range("A1").Select
+    'MsgBox "Email sent!", vbInformation, "Success!"
+    
+End Sub
+Sub CreateDirectory()
+
+  ' Declare a FileSystemObject variable
+  Dim fso As Object
+
+  ' Create the FileSystemObject
+  Set fso = CreateObject("Scripting.FileSystemObject")
+
+  ' Define the directory path
+  Dim directoryPath As String
+  directoryPath = "C:\inventory\Load out historical"
+
+  ' Check if the directory already exists
+  If Not fso.FolderExists(directoryPath) Then
+    ' Create the directory
+    fso.CreateFolder (directoryPath)
+    MsgBox "One time Set up complete. Directory created successfully!"
+  Else
+    MsgBox "Directory already exists!"
+  End If
+
+  ' Clean up
+  Set fso = Nothing
+
+End Sub
+Sub Set_Print_Area()
+'
+' Set_Print_Area Macro
+'
+
+'
+    Range("Inventory_Report[#All]").Select
+    ActiveSheet.PageSetup.PrintArea = "Inventory_Report[#All]"
+End Sub
+
