@@ -1,0 +1,644 @@
+Live IHC Inventory Prototype – Code Analysis and Data Pipeline Optimization
+Author: Gabe Jarrell *with assistance from custom knowledge bases and LLM’s. 
+Introduction
+The Live IHC Inventory prototype is an Excel-based system combining VBA macros and Power Query (M) to produce an inventory report and related outputs. The primary data source is an SAP export that omits materials with zero stock, causing gaps in the inventory reporting. This report addresses three main areas:
+1.	Code Documentation – Clear commenting of the VBA and M scripts to explain their logic and transformations.
+2.	Data Path Analysis – Mapping how data flows from source files (SAP extracts, CSVs, Excel inputs) through Power Query transformations into the final Excel outputs and VBA processes.
+3.	Optimization Plan – Proposing improvements to ensure completeness (including items with zero stock) and better performance. This includes suggestions like alternative join strategies, placeholder records for missing stock entries, and streamlined query design.
+1. Code Documentation
+1.1 VBA Script (Macros) Documentation
+Below, each VBA macro is annotated with comments (preceded by ') to describe its purpose and logic. These macros handle tasks such as exporting query results to CSV, refreshing Power Query tables, and generating the daily inventory recap report.See: IHC Inventory Assistant Data Source Research.xlsx
+Key Power Query Highlights:
+•	Master Data Integration: The Inventory query is central, merging SAP stock data with internal mappings (Converter for Material-to-SKU) and the SKU Maintenance master list. It calculates On Hand quantities, determines a Recommended State (ENABLED vs STOCKOUT) based on stock, and flags discrepancies ("OOS" for items that should be Out-Of-Stock, or "ERR FALSE OSS" for items incorrectly marked OOS in the system).
+•	Inbound Data: The Receivers Today query filters the inbound shipments (from Inbound.xlsx) to today’s deliveries, providing an “Inbound Today” figure per material. All Receivers Condensed aggregates all received quantities by SKU, used as “All Receivers” (total received to date) in the inventory table.
+•	Floor Stock (VP Locations): The VP Locations and VP Locations Report queries summarize on-floor inventory (cases in pick faces, remaining cases, etc.) from VP Locations.csv. This data is merged into the Inventory table to show “Cases Sold” (interpreted as cases picked/sold) and “Remaining Cases” on the floor, giving a fuller inventory picture (On Hand in bulk + in forward pick).
+•	Exception Lists: Two queries (EXCEPTIONS and ExceptionsStandard) load exception lists from the workbook (likely small tables maintained by users). These lists specify SKUs to exclude from automatic state changes – for example, SKUs that should not be marked OOS or should not be auto-corrected if flagged.
+•	Out-of-Stock Processing: The VP OOS query extracts items that are truly out-of-stock (Flag = "OOS") from the main inventory. The VP OOS Import query then filters those against the exceptions and prepares the final list of SKUs (with details) to import into SAP or another system to mark them as out-of-stock. Notably, it sets their state to "STOCKOUT" (replacing "ENABLED") and excludes certain locations (e.g., ignoring “Chilled” SKUs, presumably handled separately). This is output as the VP_OOS_Import table and saved via VBA to CSV.
+•	False OOS Correction: Conversely, the FALSE OOS query picks up items flagged "ERR FALSE OSS" – meaning the system likely marked them OOS but they actually have stock. VP SKU Correction then gathers full details for those SKUs (joining back to the master list) and removes any that are in the exceptions list (SKUs that perhaps we intentionally keep off system stock). The result (VP_SKU_Correction table) is exported to CSV, presumably to be used to correct the system (e.g. re-enable those SKUs in SAP or the WMS).
+•	Final Report Assembly: The Inventory Report query starts from the unified inventory table, then enriches it with additional product attributes via a DIA lookup (the content of DIA isn’t shown, but likely includes packaging configurations or product categories). It also adds a computed “+/–” column (On Hand minus Remaining Cases) to highlight any imbalance between bulk stock and what’s on the floor. The query filters out any dummy SKU (4504) and duplicates, then outputs a clean table that is displayed on the "Inventory Report" worksheet. This is the sheet printed to PDF and saved daily.
+Note: Throughout these queries, #"SKU Maintenance Full (26)" and #"Converter (26)" are used to indicate pre-loaded queries or tables for the full SKU list and the SAP-to-legacy ID converter for site 26 (the specific warehouse). These serve as reference data for multiple merges (ensuring consistency across queries).
+2. Current Data Flow and Query Dependencies
+Understanding the current pipeline is crucial to identify where data might be lost (e.g., SKUs with zero stock). Below is a breakdown of the data sources, the transformations, and how the pieces connect:
+•	SAP Inventory Export (Materials.xlsx) – Source for current stock levels.
+o	Usage: Loaded by the Inventory query (and the Missing Converter check). It provides Material IDs and Unrestricted Stock quantities. Only materials with stock appear (SAP omits zero-stock items, which is the root of the “missing SKU” issue).
+o	Transformation: Filtered for valid batches, then joined via Converter to internal SKUs.
+•	SKU Master List (SKU Maintenance.csv) – Source of all SKUs and their metadata.
+o	Usage: Loaded in SKU Maintenance query (filtered to Bulk/Chilled locations for active warehouse SKUs) and also as SKU Maintenance Full (26) for comprehensive joins.
+o	Transformation: Provides the master set of SKUs with Product names and current State (e.g., “ENABLED” or “STOCKOUT”). Used to attach product info to SAP data and to ensure a full list of items.
+•	Material Converter (Converter.csv or internal query) – Mapping between legacy Inventory IDs (which match SKU) and SAP Material numbers.
+o	Usage: Referenced in Inventory (to map SAP materials to SKU) and in All Receivers Condensed/Missing Material (for similar mappings).
+o	Transformation: Ensures data from SAP can link to the SKU master. If a mapping is missing, the queries Missing Material # or Missing Converter will catch those gaps.
+•	Warehouse Locations (VP Locations.csv) – Snapshot of on-floor inventory (cases in pick locations).
+o	Usage: Used by VP Locations and VP Locations Report queries.
+o	Transformation: Grouped and summed to get total Cases and Remaining cases by product. Joined with SKU info by description (since that file uses product descriptions). This data flows into the Inventory table as “Cases Sold” (cases picked) and “Remaining Cases” (for forward pick). It also feeds the final report for a quick view of how much stock is still in forward locations.
+•	Inbound Deliveries (Inbound.xlsx) – Log of received shipments (likely from SAP inbound delivery data).
+o	Usage: Two queries reference this: Receivers Today (today’s receipts) and All Receivers Condensed (cumulative receipts per SKU). There’s also likely an All Receivers query (not fully shown above) used to populate the “Receivers” sheet with detailed receiving records (for the recap report).
+o	Transformation: Both queries filter for completed goods movements (Sts = "A" for posted receipts). Receivers Today further filters by date = today and groups by material to sum today’s delivered quantity (providing the “Inbound Today” field). All Receivers Condensed groups by SKU across the entire dataset (or a long date range) to sum all delivered quantities, which is used as “All Receivers” total in the inventory table. The full All Receivers (detailed list) is likely used for the Receivers sheet output (which is copied to the recap workbook).
+•	Exceptions Tables (Excel workbook tables) – Manual overrides lists.
+o	Usage: There are two: one for false OOS correction (EXCEPTIONS table) and one for OOS (ExceptionsStandard). Users populate these tables in the Excel file to prevent certain SKUs from being automatically toggled.
+o	Transformation: The queries simply load these lists. The logic then excludes any SKU found in these lists from the respective outputs (VP SKU Correction or VP OOS Import), honoring any special cases or business rules.
+•	DIA (Data Integration/Attributes) – Additional product attributes (e.g., packaging type, brand, item code).
+o	Usage: Merged in the Inventory Report query. Likely comes from a separate source (possibly an Excel table or another CSV) providing fields like Package, Trademark, and Item number for each SKU (or Inventory ID).
+o	Transformation: Left-joined by SKU (or an “Inventory ID”) to enrich the final report with these attributes. Non-matching SKUs simply get nulls (which remain blank in the report).
+The Power Query dependency chain can be visualized as follows:
+•	SAP Stock Data (Materials.xlsx) ⟶ Inventory (via filtering and join with Converter)
+•	SKU Maintenance.csv ⟶ SKU Maintenance (filtered list of SKUs) ⟶ feeds into Inventory (join for SKU and State) and also into other queries (via SKU Maintenance Full for complete list joins).
+•	Converter (mapping) ⟶ used in Inventory (Material→SKU mapping) and All Receivers Condensed, Missing Material checks.
+•	Inbound.xlsx ⟶ Receivers Today (today’s Material receipts) and All Receivers Condensed (total receipts by SKU)
+o	All Receivers (detailed) likely references Inbound.xlsx too for the Receivers sheet (not explicitly detailed above but part of the flow).
+•	VP Locations.csv ⟶ VP Locations (cases per product) and VP Locations Report (cases + remaining per product)
+•	Exceptions (Table2 & Table8) ⟶ EXCEPTIONS and ExceptionsStandard queries
+•	Combining Queries:
+o	Inventory (central combined table) pulls from SAP (Materials.xlsx) + Converter + SKU Maintenance, then pulls Inbound Today (via Receivers Today join), All Receivers (via All Receivers Condensed join), Cases Sold (via VP Locations join).
+o	FALSE OOS filters from Inventory.
+o	VP SKU Correction uses FALSE OOS + SKU Maintenance Full + EXCEPTIONS.
+o	VP OOS filters from Inventory.
+o	VP OOS Import uses VP OOS + ExceptionsStandard + SKU Maintenance Full.
+o	Inventory Report uses Inventory + DIA + VP Locations Report.
+In the Excel front-end:
+•	The "Inventory Report" sheet is tied to the Inventory Report query output (final data for daily reporting).
+•	The "Receivers" sheet likely displays the All Receivers detailed query (full list of recent inbound records, for reference in the recap).
+•	The "FALSE OOS" sheet displays the FALSE OOS query (or possibly directly the VP SKU Correction query table – but given the macro naming, "FALSE OOS" sheet holds the base false OOS list, and "VP SKU Correction" is a table on it).
+•	The "Rec OOS" sheet contains the VP OOS Import query table (the recommended OOS SKUs for import).
+•	The "Email" sheet holds the list of recipients for the email macro.
+•	Other sheets (perhaps "Current Inventory" or others) may exist for intermediate data or user input (e.g., Table2, Table8 are likely on some hidden config sheets).
+Current Flow Summary: All data converges into the Inventory table which is then refined for specific purposes (reporting, OOS lists). However, because the Inventory query starts from SAP’s list of materials with stock, any SKU with zero stock is absent from this pipeline – it won’t appear in Inventory or subsequent outputs. The system tries to catch those via the “Recommended OOS” logic and separate queries, but they are not present in the main report, which is a significant gap.                                                            
+(See diagram on next page for a conceptual flow – where arrows denote data flow into queries, and boxes are queries or outputs):
+ 
+ 
+Diagram: Current Data Flow (sources on left, queries in brackets, outputs on right).
+
+
+
+3. Optimized Data Pipeline – Plan for Completeness and Performance
+To address the issues and improve the system, we propose the following optimizations:
+3.1 Ensure Complete SKU Coverage (Handle Missing Stock Entries)
+Problem: SAP’s export omits SKUs with zero stock, meaning those items vanish from the report when they hit zero. Currently, the system only catches them indirectly (via flags and separate lists) but does not include them in the main inventory view.
+Solution: Redesign the query logic to include all SKUs from the master list and explicitly show zero stock when applicable. There are a few ways to achieve this:
+•	
+•	Use the SKU Master as the primary table and left-join the SAP stock data to it (instead of the reverse). In Power Query, this can be done by starting with SKU Maintenance Full (all SKUs for the site) and merging SAP stock (via the converter) onto it. This is effectively a right-outer join from SAP’s perspective: it brings in stock counts where available, and leaves null (which can be treated as 0) for SKUs with no current stock. All SKUs (Bulk/Chilled) will thus appear, ensuring no gaps.
+o	After merging, add a step: Table.ReplaceValue(..., null, 0, ...) or Table.TransformColumns(..., each if _ = null then 0 ...) on the stock quantity column to fill missing stock with 0 
+stackoverflow.com
+. This explicitly marks those as zero On Hand.
+o	Compute the “Recommended State” directly: if stock = 0, mark as STOCKOUT; if >0, ENABLED. This will automatically flag those zero-stock SKUs as OOS if their current state isn’t STOCKOUT.
+•	Alternative union approach: Perform two queries and union them:
+o	The current Inventory query (as is, with only in-stock SKUs).
+o	A query that finds SKUs in master list not present in the Inventory query (an anti-join or comparison) and creates placeholder rows for them with On Hand = 0.
+Then append these two sets together. The result is a full outer join of SKUs and stock. This method would yield the same outcome – every SKU listed, stock present or not. However, this can be more complex and potentially less efficient than the direct left-join approach above.
+•	Historical check (optional): As an extra safeguard, use yesterday’s data to catch disappearing SKUs (if the master list isn’t fully up to date). For example, if a SKU had stock yesterday but is missing today (and not in master for some reason), you could carry it over as zero. This would require storing the previous day’s inventory list and comparing, which might be overkill given a maintained master list. Generally, keeping the SKU Maintenance updated and using it as the base is simpler.
+Implementing the first approach (master list as base with left join to SAP stock) would integrate the currently separate “Recommended OOS” step into the main Inventory. Those SKUs with no stock would appear with 0 On Hand and a Recommended State of STOCKOUT. Consequently, they would be flagged "OOS" directly in the Inventory table when their current state is still "ENABLED". This means the Inventory Report and other outputs will naturally include items that are out of stock (with 0 quantity), rather than dropping them entirely.
+3.2 Simplify and Strengthen Query Joins
+In the current queries, some joins use text fields (e.g., product Description in VP Locations to Product in SKU Maintenance). This can be error-prone if descriptions are not unique or have slight mismatches. In an optimized pipeline:
+•	Use numeric keys whenever possible: If VP Locations.csv contains the SKU code (it does have an SKU column), use that to join to the SKU list instead of Description. We could adjust the VP Locations Report query to group by SKU and sum Cases/Remaining by SKU directly (ensuring one row per SKU), then just merge to add the product description from maintenance if needed. This removes reliance on the Description text join and ensures each SKU’s floor stock is correctly attributed. It also prevents an issue where two SKUs share the same description (which could incorrectly aggregate them together in the current method).
+•	Consolidate SKU references: Maintain a single “SKU Maintenance Full” query and ensure all other queries reference it (or a filtered version) rather than loading the CSV multiple times. In the current setup, SKU Maintenance is loaded once and filtered, which is good. Queries that need the full list use SKU Maintenance Full (26). We should confirm SKU Maintenance Full (26) is either the base query or a reference that doesn’t re-read the file. If it currently reloads the CSV separately, we can optimize by making it reference the already-loaded data (to avoid duplicate IO).
+•	Full Outer Joins if needed: Power Query’s GUI allows left, right, inner, etc. If a full outer join is needed (to combine two lists without losing any entries from either), we can simulate it (e.g., do a left join plus a right join or use the new full join option if available 
+learn.microsoft.com
+). In our case, using the SKU master as the base (left join SAP) covers the full set needed, so a full join is not strictly necessary unless combining two disparate lists.
+3.3 Query Refactoring for Performance
+Some transformations can be streamlined for better performance and maintainability:
+•	Reduce Redundant Sorting and Grouping: For example, the VP Locations data is grouped and sorted multiple times. We can achieve the same result in fewer steps: group by SKU to sum Cases and Remaining in one go (getting both totals per SKU), then join to SKU list to fetch description or verify SKU. If grouping by description is intended to merge multiple SKUs with the same description, it would be better to clarify why (usually each SKU has a unique product name in a master list; if not, consider adding a proper product ID grouping). Minimizing intermediate sorts and groupings will make refresh faster, especially on large data.
+•	Reuse loaded data: The Inbound.xlsx is read twice (for Receivers Today and All Receivers Condensed). We can refactor by reading it once into a base query (e.g., “InboundRaw”) and then referencing that query for the two different aggregations. This way, the file is parsed only once on refresh. Similarly, VP Locations.csv is read twice for two queries – we can read it once and then reference it for both the “VP Locations” and “VP Locations Report” logic. Using Power Query’s reference feature (duplication of query without reloading source) can cut down refresh time and ensure consistency.
+•	Eliminate unneeded columns early: The queries generally do this (selecting needed columns), which is good for performance. Continuing that practice in any new join (especially the master SKU join) will keep memory usage lower.
+•	Avoid unnecessary Distinct operations: The current Inventory query does Table.Distinct on {Product, On Hand} which is a bit unconventional – this could inadvertently drop a valid row if two different SKUs had the same product name and on-hand quantity. If the goal is to remove exact duplicate rows (which might occur if the data join created duplicates), it would be safer to use all key columns for distinct or handle it via proper grouping. In an optimized design (with correct unique keys and grouping), duplicates shouldn’t arise; thus that step may be removable or at least changed to use a more unique subset (like SKU as part of the distinct key). Each SKU should be unique in the final output anyway after grouping.
+•	Cache static data in Excel Data Model or Tables: If performance is still an issue, consider loading large static reference data (SKU list, converter) into the workbook Data Model or as static tables and referencing those in Power Query (they will load faster and refresh only when changed). However, given the scale (likely manageable CSV sizes), the above step should suffice.
+3.4 Pipeline Flow Changes
+With the above adjustments, the optimized data flow would be:
+•	SKU Master (complete list) → merge SAP stock (via converter) → Complete Inventory list (with On Hand for all SKUs, 0 if none). This replaces the earlier Inventory query’s starting point.
+•	Continue to merge inbound and floor stock data into this inventory list as before. The difference: now even SKUs with 0 stock will receive inbound and floor stock (which might be 0 or none, but at least the SKU is present).
+•	Compute Recommended State and Flags in the same query (which will now naturally flag all zero-stock SKUs as OOS if they are enabled in the system).
+•	The outputs for VP OOS Import can now potentially be simplified: it could directly reference the Inventory table’s flags or we continue to use the filtered query but now it will also catch those previously missing SKUs. Since those SKUs are now in Inventory with Flag "OOS", the VP OOS query will list them. The rest of the logic (excluding exceptions, etc.) stays the same.
+•	VP SKU Correction (false OOS) similarly continues to work, and it might even pick up fewer surprises because the main inventory now includes everything. False OOS flags will be accurate because we’re comparing all SKUs actual vs system state in one place.
+•	Inventory Report will automatically list all products, including those with 0 stock. This is a big improvement: stakeholders will see an item with 0 on hand (and perhaps an indicator it’s out of stock) instead of not seeing the item at all. For example, if “Product X” ran out, the report will show “Product X – On Hand: 0 – State: STOCKOUT (flag OOS)” rather than dropping it. This helps users track zero stock items explicitly.
+3.5 Leverage Power Query Features
+•	Full Outer Join: If using the latest Power Query (in Excel/PowerBI), a Full Outer merge can be directly chosen 
+learn.microsoft.com
+between the SAP data and SKU list to achieve inclusion of all rows from both sides. In practice, using the SKU list as left and SAP as right with left-join is enough (since every SKU should appear at least on the left). But full join could be used to be safe if needed (then followed by combining columns).
+•	Parameterize date filters: The Receivers Today query uses Date.IsInCurrentDay, which is fine, but if you wanted to refresh for past dates (for testing or backfill) a parameter could be introduced. This is a minor improvement – current day logic is working and likely intended.
+•	Testing the new logic: Once changes are made, test with a scenario where a SKU has zero stock to ensure it appears with 0. Also test that no duplicate or unexpected rows appear after the join refactor.
+3.6 Update VBA and Usage as Needed
+Most VBA can remain unchanged with these data model improvements, but a few points:
+•	The CSV export macros will now export more complete data. For instance, VP_OOS_Import CSV might now include newly OOS SKUs that previously were missing (which is desired). Ensure any consuming system can handle the slightly larger list (should be fine).
+•	The main Inventory Report might list more items (all the zero-stock ones). If there is concern about clutter, we could filter out truly inactive SKUs (e.g., if a SKU has been 0 for a long time and not expected to show, maybe it wouldn’t be in Bulk/Chilled or would be marked differently). However, it’s usually best to show all, or perhaps filter out those marked discontinued (depending on State field). Currently, the report filters out SKU 4504 only (special case). We might consider filtering any SKUs that have a certain flag if needed (e.g., if State = "DISCONTINUED", exclude). This is up to business rules.
+•	The Email distribution remains the same, but now recipients get a fuller report. It might be useful to highlight OOS items in the report (perhaps conditional formatting in Excel, outside the scope of queries, could be applied to flag zero on hand items).
+3.7 Conclusion of Optimizations
+By implementing the above plan, the data pipeline will:
+•	Eliminate gaps: No missing SKUs on reports due to zero stock. All inventory items are visible, each with accurate on-hand (including 0) and proper status flags.
+•	Provide clearer actions: The “Flag” column in the Inventory table directly tells if something is OOS or needs correction, simplifying logic. Over time, this might allow combining the OOS Import and SKU Correction queries into perhaps one or handling them with simpler filters, since the main inventory covers full range.
+•	Improve performance: Fewer file reads (caching Inbound and VP Location data), streamlined grouping, and removal of redundant operations will make refreshes faster and reduce the chance of errors.
+•	Maintain maintainability: The code (both M and VBA) becomes easier to understand with added comments (as provided above) and a more straightforward data flow. Future developers can adjust source file paths or add new data sources (e.g., another location’s data) with a clear view of how information propagates.
+4. Recommendations for Future Development
+•	Automate Master Data Updates: Ensure the SKU Maintenance list and Converter mapping are kept current (perhaps automate pulling those from a system periodically) so that the query has the latest universe of SKUs. This prevents any new SKU from being missed. The “Missing Material #” and “Missing Converter” queries help identify discrepancies; reviewing their output regularly will tell you if master data updates are needed.
+•	Scaling Consideration: If data volume grows (more SKUs or daily inbound lines), monitor refresh times. The approach of referencing queries and reducing redundant steps should hold well. If needed, consider moving heavy transformations to a database or using Power Pivot/Data Model for some calculations, but for most moderate scenarios, Power Query is sufficient.
+•	User Interface: Continue to use Excel sheets for user inputs (exceptions, email lists) as it gives flexibility. Possibly add an “Include Zero Stock Items” toggle or filter in the report if users ever want to hide zero-stock items – but given the original issue, it sounds like including them is desired.
+•	Error Handling: Add simple checks in VBA after refresh – e.g., verify that the Inventory table is not empty (to catch any unexpected SAP file issues) and alert the user if something seems off. Also, the email macro currently displays the Outlook email; if fully automating, one could enable the .Send line and perhaps add error handling for Outlook not installed, etc.
+By implementing these improvements, the Live IHC Inventory prototype will become more robust, accurate, and easier to maintain. All SKUs will be tracked regardless of stock status, ensuring that “out-of-stock” means an item shows up as 0 – not that it disappears from your radar. This gives end-users and stakeholders a complete picture of inventory at all times, while the system still provides targeted lists for action (what to mark OOS, what to correct). The optimizations also lay a cleaner foundation for any further enhancements, such as incorporating additional warehouses or automating data refresh on a schedule.
+
+// **Query: SAPUI5 Export (Material master list)** 
+// Purpose: Load a list of all materials and descriptions from the SAP export workbook (Materials.xlsx).
+let
+    Source = Excel.Workbook(File.Contents("C:\Inventory\Materials.xlsx"), null, true),
+    SAPExport_Sheet = Source{[Item="SAPUI5 Export",Kind="Sheet"]}[Data],
+    #"Promoted Headers1" = Table.PromoteHeaders(SAPExport_Sheet, [PromoteAllScalars=true]),
+    #"Removed Other Columns" = Table.SelectColumns(#"Promoted Headers1", {"Material", "Material Description"})
+in
+    #"Removed Other Columns"
+// (This query simply extracts Material ID and Description. It may be used as a reference for a full material list.)
+
+// **Query: VP Locations**
+// Purpose: Summarize the on-floor inventory from "VP Locations.csv". Likely represents cases in forward pick locations.
+let
+    Source = Csv.Document(File.Contents("C:\Inventory\VP Locations.csv"),
+                [Delimiter=",", Columns=9, Encoding=1252, QuoteStyle=QuoteStyle.None]),
+    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
+    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers", {
+                    {"Zone", type text}, {"SKU", Int64.Type}, {"Description", type text},
+                    {"Cases", Int64.Type}, {"Picked", Int64.Type}, {"Orders", Int64.Type},
+                    {"Remaining", Int64.Type}, {"UPC", type text}, {"Cases / Order", Int64.Type}}),
+    // Group by SKU, Description, and Remaining to sum up Cases (if multiple entries per SKU exist).
+    #"Grouped Rows" = Table.Group(#"Changed Type", {"SKU", "Description", "Remaining"},
+                    {{"Cases", each List.Sum([Cases]), type nullable number}}),
+    #"Sorted Rows" = Table.Sort(#"Grouped Rows", {{"Description", Order.Ascending}}),
+    // Further group by Description alone to sum Cases across any duplicate descriptions.
+    // (This implies if the same product description appears in multiple SKUs or zones, it consolidates them.)
+    #"Grouped Rows1" = Table.Group(#"Sorted Rows", {"Description"},
+                    {{"Cases", each List.Sum([Cases]), type nullable number}}),
+    #"Sorted Rows2" = Table.Sort(#"Grouped Rows1", {{"Description", Order.Ascending}}),
+    // Join the summed results with the SKU Maintenance Full list to retrieve the SKU number for each Description.
+    // Using Description (product name) to match Product field in SKU maintenance (assuming unique product descriptions).
+    #"Merged Queries" = Table.NestedJoin(#"Sorted Rows2", {"Description"},
+                    #"SKU Maintenance Full (26)", {"Product"}, "SKU Maintenance", JoinKind.LeftOuter),
+    #"Expanded SKU Maintenance1" = Table.ExpandTableColumn(#"Merged Queries", "SKU Maintenance",
+                    {"SKU"}, {"SKU Maintenance.SKU"})
+in
+    #"Expanded SKU Maintenance1"
+// Output: A table with Product Description, total Cases, and the corresponding SKU (if found).
+// (This "VP Locations" data is later used to integrate on-floor cases with the main inventory.)
+
+// **Query: SKU Maintenance**
+// Purpose: Load the master list of SKUs with their product names and current state (availability status), filtered for relevant locations.
+let
+    Source = Csv.Document(File.Contents("C:\Inventory\SKU Maintenance.csv"),
+                [Delimiter=",", Columns=10, Encoding=1252, QuoteStyle=QuoteStyle.None]),
+    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
+    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers", {
+                    {"Location", type text}, {"SKU", Int64.Type}, {"Product", type text},
+                    {"Loc Name", Int64.Type}, {"Spoken Description", type text},
+                    {"Starter Qty", Int64.Type}, {"State", type text},
+                    {"lang_desc", type text}, {"Sequence", Int64.Type}, {"Verification", type text}}),
+    // Filter to only include SKUs from the desired locations (e.g., "Bulk" or "Chilled" storage areas).
+    #"Filtered Rows" = Table.SelectRows(#"Changed Type", each ([Location] = "Bulk" or [Location] = "Chilled")),
+    // Keep only essential columns: SKU, Product (name/description), and current State (Enabled/Disabled).
+    #"Removed Other Columns" = Table.SelectColumns(#"Filtered Rows", {"SKU", "Product", "State"})
+in
+    #"Removed Other Columns"
+// This query yields the core list of SKUs in the Bulk/Chilled warehouse, with their product name and current status.
+// (There is also a "SKU Maintenance Full (26)" in use, likely a similar full list without filtering, used for comprehensive lookups.)
+
+// **Query: Inventory** 
+// Purpose: Build the main inventory table by combining SAP stock data with SKU info and other metrics.
+let
+    // Step 1: Load SAP inventory export (Materials.xlsx - "SAPUI5 Export" sheet)
+    Source = Excel.Workbook(File.Contents("C:\Inventory\Materials.xlsx"), null, true),
+    SAPUI5Export_Sheet = Source{[Item="SAPUI5 Export",Kind="Sheet"]}[Data],
+    #"Promoted Headers" = Table.PromoteHeaders(SAPUI5Export_Sheet, [PromoteAllScalars=true]),
+    // Filter out any dummy or irrelevant batch entries (e.g., exclude rows where Batch contains "FGDUMMY").
+    #"Filtered Rows2" = Table.SelectRows(#"Promoted Headers", each not Text.Contains([Batch], "FGDUMMY")),
+    // Select only the relevant columns from SAP data: Material ID, Material Description, and Available Stock.
+    #"Removed Other Columns" = Table.SelectColumns(#"Filtered Rows2", {"Material", "Material Description", "Unrestricted Stock in Alt UoM"}),
+    #"Changed Type" = Table.TransformColumnTypes(#"Removed Other Columns", {
+                    {"Material", Int64.Type}, {"Unrestricted Stock in Alt UoM", Int64.Type}}),
+    // Step 2: Map SAP Material to internal SKU by joining with "Converter" table.
+    // The "Converter (26)" query (not shown here) presumably maps SAP Material # to Legacy Inventory ID (SKU).
+    #"Merged Queries" = Table.NestedJoin(#"Changed Type", {"Material"},
+                    #"Converter (26)", {"SAP Material #"}, "Converter", JoinKind.LeftOuter),
+    #"Expanded Converter" = Table.ExpandTableColumn(#"Merged Queries", "Converter",
+                    {"Legacy Inven ID", "SAP Material #"}, {"Converter.Legacy Inven ID", "Converter.SAP Material #"}),
+    // Step 3: Join with SKU Maintenance to get SKU number, product name, and state using the Legacy ID.
+    // The Legacy Inven ID from the converter should correspond to the SKU in maintenance.
+    #"Merged Queries1" = Table.NestedJoin(#"Expanded Converter", {"Converter.Legacy Inven ID"},
+                    #"SKU Maintenance", {"SKU"}, "SKU Maintenance", JoinKind.LeftOuter),
+    #"Expanded SKU Maintenance" = Table.ExpandTableColumn(#"Merged Queries1", "SKU Maintenance",
+                    {"SKU", "Product", "State"}, {"SKU Maintenance.SKU", "SKU Maintenance.Product", "SKU Maintenance.State"}),
+    // Rearranging columns for clarity.
+    #"Reordered Columns" = Table.ReorderColumns(#"Expanded SKU Maintenance",
+                    {"SKU Maintenance.SKU", "SKU Maintenance.Product", "Material", "Material Description",
+                     "Converter.Legacy Inven ID", "Converter.SAP Material #"}),
+    // Remove any columns we don't need beyond this point (keeping SKU, Product, stock, Material, and State).
+    #"Removed Other Columns1" = Table.SelectColumns(#"Reordered Columns",
+                    {"SKU Maintenance.SKU", "SKU Maintenance.Product", "Unrestricted Stock in Alt UoM", "Material", "SKU Maintenance.State"}),
+    // Rename the stock column for readability.
+    #"Renamed Columns2" = Table.RenameColumns(#"Removed Other Columns1",
+                    {{"Unrestricted Stock in Alt UoM", "Unrestricted Stock"}}),
+    // Group by SKU (and other identifying fields) to aggregate stock in case there were duplicates in the SAP extract.
+    #"Grouped Rows" = Table.Group(#"Renamed Columns2",
+                    {"SKU Maintenance.SKU", "SKU Maintenance.Product", "Material", "SKU Maintenance.State"},
+                    {{"On Hand", each List.Sum([Unrestricted Stock]), type nullable number}}),
+    // Simplify column names after grouping.
+    #"Renamed Columns" = Table.RenameColumns(#"Grouped Rows", {
+                    {"SKU Maintenance.SKU", "SKU"}, {"SKU Maintenance.Product", "Product"}}),
+    #"Sorted Rows" = Table.Sort(#"Renamed Columns", {{"Product", Order.Ascending}}),
+    // Remove any records where SKU is null or empty (these would be materials that failed to map to a SKU).
+    #"Filtered Rows" = Table.SelectRows(#"Sorted Rows", each [SKU] <> null and [SKU] <> ""),
+    // Add a duplicate of "On Hand" to later compute a recommended state.
+    #"Duplicated Column" = Table.DuplicateColumn(#"Filtered Rows", "On Hand", "On Hand - Copy"),
+    #"Renamed Columns1" = Table.RenameColumns(#"Duplicated Column", {{"On Hand - Copy", "Recomended State"}}),
+    // (Immediately remove this placeholder "Recomended State" column; it will be re-added with logic next.)
+    #"Removed Columns" = Table.RemoveColumns(#"Renamed Columns1", {"Recomended State"}),
+    // Add a "Recommended State" column based on stock levels:
+    //  - If a specific SKU (4504) is encountered, force "ENABLED" (possibly a special SKU or dummy entry).
+    //  - If On Hand <= 0, recommend "STOCKOUT" (meaning it should be out-of-stock).
+    //  - If On Hand > 0, recommend "ENABLED".
+    #"Added Conditional Column" = Table.AddColumn(#"Removed Columns", "Recomended State",
+                    each if [SKU] = 4504 then "ENABLED" 
+                         else if [On Hand] <= 0 then "STOCKOUT" 
+                         else if [On Hand] > 0 then "ENABLED" 
+                         else null),
+    // Add a "Flag" column to highlight discrepancies between current state and recommended state:
+    //  - If the SKU's current state (from maintenance) matches the recommended state, no flag ("").
+    //  - If recommended state is "STOCKOUT" (and presumably the current state is not), flag as "OOS" (out-of-stock needed).
+    //  - If On Hand < 1 (no stock physically), leave flag blank (likely covered by OOS or already out).
+    //  - If the current state != recommended state (and not caught by above), flag as "ERR FALSE OSS" indicating an erroneous stock status (e.g., system says OOS but stock exists).
+    //  - If the current state is "ENABLED" (and by elimination, recommended must be stockout?), then no flag (this case may overlap with others).
+    #"Added Conditional Column1" = Table.AddColumn(#"Added Conditional Column", "Flag",
+                    each if [SKU Maintenance.State] = [Recomended State] then ""
+                         else if [Recomended State] = "STOCKOUT" then "OOS"
+                         else if [On Hand] < 1 then ""
+                         else if [SKU Maintenance.State] <> [Recomended State] then "ERR FALSE OSS"
+                         else if [SKU Maintenance.State] = "ENABLED" then ""
+                         else null),
+    // Bring in **today's inbound receipts** by joining with the "Receivers Today" query on Material.
+    #"Merged Queries2" = Table.NestedJoin(#"Added Conditional Column1", {"Material"},
+                    #"Receivers Today", {"Material"}, "Receivers Today", JoinKind.LeftOuter),
+    #"Expanded Receivers Today" = Table.ExpandTableColumn(#"Merged Queries2", "Receivers Today",
+                    {"Delivery Quantity"}, {"Delivery Quantity"}),
+    #"Renamed Columns3" = Table.RenameColumns(#"Expanded Receivers Today",
+                    {{"Delivery Quantity", "Inbound Today"}}),
+    // Join with **VP Locations** (on-floor inventory) by SKU to pull in current on-floor case count.
+    #"Merged Queries3" = Table.NestedJoin(#"Renamed Columns3", {"SKU"},
+                    #"VP Locations", {"SKU Maintenance.SKU"}, "VP Locations", JoinKind.LeftOuter),
+    #"Expanded VP Locations" = Table.ExpandTableColumn(#"Merged Queries3", "VP Locations",
+                    {"Cases"}, {"VP Locations.Cases"}),
+    // Reorder columns logically for the combined data.
+    #"Reordered Columns3" = Table.ReorderColumns(#"Expanded VP Locations",
+                    {"SKU", "Material", "Product", "On Hand", "Inbound Today",
+                     "SKU Maintenance.State", "Recomended State", "Flag", "VP Locations.Cases"}),
+    // Remove any exact duplicate rows that might have arisen (e.g., multiple identical entries).
+    #"Removed Duplicates" = Table.Distinct(#"Reordered Columns3", {"Product", "On Hand"}),
+    // Rename the VP Locations Cases column to "Cases Sold" – 
+    // (It appears "Cases" here might represent cases picked/sold from the forward pick, interpreting it as sold quantity).
+    #"Renamed Columns4" = Table.RenameColumns(#"Removed Duplicates", {{"VP Locations.Cases", "Cases Sold"}}),
+    //"Cases Sold" now likely represents how many cases have been picked (sold) from that SKU (today or in a period).
+    #"Reordered Columns4" = Table.ReorderColumns(#"Renamed Columns4",
+                    {"SKU", "Material", "Product", "On Hand", "Inbound Today", "Cases Sold",
+                     "SKU Maintenance.State", "Recomended State", "Flag"}),
+    // Join with **All Receivers Condensed** (cumulative receipts) on Material to get total received quantity to date.
+    #"Merged Queries4" = Table.NestedJoin(#"Reordered Columns4", {"Material"},
+                    #"All Receivers Condensed", {"Material"}, "All Receivers", JoinKind.LeftOuter),
+    #"Expanded All Receivers" = Table.ExpandTableColumn(#"Merged Queries4", "All Receivers",
+                    {"Delivery Quantity"}, {"Delivery Quantity"}),
+    #"Renamed Columns5" = Table.RenameColumns(#"Expanded All Receivers", {{"Delivery Quantity", "All Receivers"}}),
+    #"Reordered Columns5" = Table.ReorderColumns(#"Renamed Columns5",
+                    {"SKU", "Material", "Product", "On Hand", "Cases Sold", "Inbound Today",
+                     "All Receivers", "SKU Maintenance.State", "Recomended State", "Flag"}),
+    // Replace nulls in "Cases Sold" with 0 (if a SKU had no entry in VP Locations, assume 0 cases sold).
+    #"Replaced Value" = Table.ReplaceValue(#"Reordered Columns5", null, 0, Replacer.ReplaceValue, {"Cases Sold"}),
+    // Join with **VP Locations Report** to get "Remaining Cases" (cases remaining on floor for that product).
+    #"Merged Queries5" = Table.NestedJoin(#"Replaced Value", {"SKU"},
+                    #"VP Locations Report", {"SKU Maintenance.SKU"}, "VP Locations Report", JoinKind.LeftOuter),
+    #"Expanded VP Locations Report" = Table.ExpandTableColumn(#"Merged Queries5", "VP Locations Report",
+                    {"Remaining Cases"}, {"Remaining Cases"}),
+    // Final rearrangement including the new "Remaining Cases"
+    #"Reordered Columns7" = Table.ReorderColumns(#"Expanded VP Locations Report",
+                    {"SKU", "Material", "Product", "On Hand", "Cases Sold", "Remaining Cases",
+                     "Inbound Today", "All Receivers", "SKU Maintenance.State", "Recomended State", "Flag"})
+in
+    #"Reordered Columns7"
+// The **Inventory** query above produces a comprehensive table with each SKU (for which stock was found in SAP):
+// Columns: SKU, Material (SAP ID), Product (description), On Hand (current stock), Cases Sold (from VP locations),
+// Remaining Cases (on floor remaining), Inbound Today, All Receivers (total received), 
+// Current State (from SKU Maintenance), Recommended State (based on stock), and Flag (indicating OOS or errors).
+
+// **Query: Receivers Today**
+// Purpose: From the inbound shipments log, find total quantity delivered **today** for each material.
+let
+    Source = Excel.Workbook(File.Contents("C:\Inventory\Inbound.xlsx"), null, true),
+    RawData = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+    #"Promoted Headers" = Table.PromoteHeaders(RawData, [PromoteAllScalars=true]),
+    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers", {
+                    {"Deliv. date(From/to)", type date}, {"Act. Gds Mvmnt Date", type date}, 
+                    {"Goods Issue Time", type datetime}, {"Goods receipt date", type date},
+                    {"Goods Movement Sts", type text}, {"Supplier Name", type text},
+                    {"Purchasing Document", Int64.Type}, {"Delivery", Int64.Type},
+                    {"Item", Int64.Type}, {"Material", Int64.Type}, {"Item Description", type text},
+                    {"Delivery Quantity", Int64.Type}, {"Sales unit", type text},
+                    {"Created By", type text}, {"Freight Order", type text},
+                    {"Goods Movement Sts_1", type text}, {"Plant", Int64.Type},
+                    {"Supplier", Int64.Type}, {"Supplier Location", type text}}),
+    // Filter to include only records where Goods Movement Status = "A" (meaning the goods receipt is posted/accepted).
+    #"Filtered Rows" = Table.SelectRows(#"Changed Type", each [Goods Movement Sts] = "A"),
+    // Keep relevant columns for identifying the receipt and the quantity.
+    #"Removed Other Columns" = Table.SelectColumns(#"Filtered Rows", {
+                    "Deliv. date(From/to)", "Goods Movement Sts", "Supplier Name",
+                    "Purchasing Document", "Material", "Item Description", "Delivery Quantity",
+                    "Plant", "Supplier", "Supplier Location"}),
+    //"Deliv. date(From/to)" is presumably the delivery date.
+    #"Sorted Rows" = Table.Sort(#"Removed Other Columns", {{"Purchasing Document", Order.Ascending}}),
+    // Filter to only include entries with delivery date equal to the current date (i.e., today's deliveries).
+    #"Filtered Rows1" = Table.SelectRows(#"Sorted Rows", each Date.IsInCurrentDay([#"Deliv. date(From/to)"])),
+    // Group by Material and Item Description to sum the delivery quantities for today.
+    #"Grouped Rows" = Table.Group(#"Filtered Rows1", {"Material", "Item Description"},
+                    {{"Delivery Quantity", each List.Sum([Delivery Quantity]), type nullable number}})
+in
+    #"Grouped Rows"
+// Output: A table with Material, Item Description, and total Delivery Quantity for the current day.
+// (This is used in the Inventory query to populate the "Inbound Today" column per SKU's material.)
+
+// **Query: All Receivers Condensed**
+// Purpose: Provide a summary of **all** received quantities by SKU (possibly to date or within a timeframe).
+let
+    Source = Excel.Workbook(File.Contents("C:\Inventory\Inbound.xlsx"), null, true),
+    RawData = Source{[Item="Sheet1",Kind="Sheet"]}[Data],
+    #"Promoted Headers" = Table.PromoteHeaders(RawData, [PromoteAllScalars=true]),
+    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers", {
+                    {"Deliv. date(From/to)", type date}, {"Act. Gds Mvmnt Date", type date}, 
+                    {"Goods Issue Time", type datetime}, {"Goods receipt date", type date},
+                    {"Goods Movement Sts", type text}, {"Supplier Name", type text},
+                    {"Purchasing Document", Int64.Type}, {"Delivery", Int64.Type},
+                    {"Item", Int64.Type}, {"Material", Int64.Type}, {"Item Description", type text},
+                    {"Delivery Quantity", Int64.Type}, {"Sales unit", type text},
+                    {"Created By", type text}, {"Freight Order", type text},
+                    {"Goods Movement Sts_1", type text}, {"Plant", Int64.Type},
+                    {"Supplier Location", type text}}),
+    // Filter to goods that have been received (Status "A" as above).
+    #"Filtered Rows" = Table.SelectRows(#"Changed Type", each [Goods Movement Sts] = "A"),
+    // Select key columns including Material, Description, Quantity, etc.
+    #"Removed Other Columns" = Table.SelectColumns(#"Filtered Rows", {
+                    "Deliv. date(From/to)", "Goods Movement Sts", "Supplier Name",
+                    "Purchasing Document", "Material", "Item Description", "Delivery Quantity",
+                    "Plant", "Supplier Location"}),
+    #"Sorted Rows" = Table.Sort(#"Removed Other Columns", {{"Purchasing Document", Order.Ascending}}),
+    // Join with Converter and SKU Maintenance to translate Material into SKU and Product.
+    #"Merged Queries" = Table.NestedJoin(#"Sorted Rows", {"Material"},
+                    #"Converter (26)", {"SAP Material #"}, "Converter", JoinKind.LeftOuter),
+    #"Expanded Converter" = Table.ExpandTableColumn(#"Merged Queries", "Converter",
+                    {"Legacy Inven ID"}, {"Converter.Legacy Inven ID"}),
+    #"Merged Queries1" = Table.NestedJoin(#"Expanded Converter", {"Converter.Legacy Inven ID"},
+                    #"SKU Maintenance Full (26)", {"SKU"}, "SKU Maintenance Full", JoinKind.LeftOuter),
+    #"Expanded SKU Maintenance Full" = Table.ExpandTableColumn(#"Merged Queries1", "SKU Maintenance Full",
+                    {"Product"}, {"SKU Maintenance Full.Product"}),
+    // Rename and reorder columns for clarity
+    #"Renamed Columns" = Table.RenameColumns(#"Expanded SKU Maintenance Full",
+                    {{"SKU Maintenance Full.Product", "Product"}, {"Converter.Legacy Inven ID", "SKU"}}),
+    #"Reordered Columns1" = Table.ReorderColumns(#"Renamed Columns",
+                    {"Deliv. date(From/to)", "Purchasing Document", "SKU", "Product", "Material",
+                     "Item Description", "Delivery Quantity", "Supplier Name", "Plant", "Goods Movement Sts", "Supplier Location"}),
+    #"Renamed Columns1" = Table.RenameColumns(#"Reordered Columns1",
+                    {{"Deliv. date(From/to)", "Deliv. date"}}),
+    // Remove unnecessary columns and group by SKU to sum all received quantities.
+    #"Removed Other Columns1" = Table.SelectColumns(#"Renamed Columns1",
+                    {"SKU", "Product", "Material", "Item Description", "Delivery Quantity", "Supplier Name"}),
+    #"Grouped Rows" = Table.Group(#"Removed Other Columns1", {"SKU", "Material", "Item Description"},
+                    {{"Delivery Quantity", each List.Sum([Delivery Quantity]), type nullable number}})
+in
+    #"Grouped Rows"
+// Output: A table of SKU, Material, Description, and the summed Delivery Quantity (likely total received quantity).
+// In the Inventory query, this is merged to add the "All Receivers" column (total inbound quantity per SKU).
+
+// **Query: VP Locations Report**
+// Purpose: Further summarize VP Locations data to get **Remaining Cases** by product, and attach SKU for reporting.
+let
+    Source = Csv.Document(File.Contents("C:\Inventory\VP Locations.csv"),
+                [Delimiter=",", Columns=9, Encoding=1252, QuoteStyle=QuoteStyle.None]),
+    #"Promoted Headers" = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
+    #"Changed Type" = Table.TransformColumnTypes(#"Promoted Headers", {
+                    {"Zone", type text}, {"SKU", Int64.Type}, {"Description", type text},
+                    {"Cases", Int64.Type}, {"Picked", Int64.Type}, {"Orders", Int64.Type},
+                    {"Remaining", Int64.Type}, {"UPC", type text}, {"Cases / Order", Int64.Type}}),
+    // Group by SKU, Description, Remaining to sum Cases (similar to first step in VP Locations query)
+    #"Grouped Rows" = Table.Group(#"Changed Type", {"SKU", "Description", "Remaining"},
+                    {{"Cases", each List.Sum([Cases]), type nullable number}}),
+    #"Sorted Rows" = Table.Sort(#"Grouped Rows", {{"Description", Order.Ascending}}),
+    // Group by Description to get total Cases and total Remaining for each product description.
+    #"Grouped Rows1" = Table.Group(#"Sorted Rows", {"Description"},
+                    {{"Cases", each List.Sum([Cases]), type nullable number},
+                     {"Remaining Cases", each List.Sum([Remaining]), type nullable number}}),
+    #"Sorted Rows2" = Table.Sort(#"Grouped Rows1", {{"Description", Order.Ascending}}),
+    // Join with SKU Maintenance Full to retrieve SKU by matching Description to Product name.
+    #"Merged Queries" = Table.NestedJoin(#"Sorted Rows2", {"Description"},
+                    #"SKU Maintenance Full (26)", {"Product"}, "SKU Maintenance", JoinKind.LeftOuter),
+    #"Expanded SKU Maintenance1" = Table.ExpandTableColumn(#"Merged Queries", "SKU Maintenance",
+                    {"SKU"}, {"SKU Maintenance.SKU"})
+in
+    #"Expanded SKU Maintenance1"
+// Output: A table listing each product description with the sum of Cases and Remaining Cases, plus the SKU.
+// This is used in the Inventory query (and the final report) to provide "Remaining Cases" on the floor for each SKU/product.
+
+// **Query: FALSE OOS**
+// Purpose: Identify SKUs that are erroneously marked as out-of-stock (OOS) in the system (flagged "ERR FALSE OSS").
+let
+    Source = Inventory,  // Use the main Inventory query result as source
+    #"Removed Duplicates" = Table.Distinct(Source, {"SKU", "On Hand", "Product", "Material"}),
+    // Filter to only those records flagged as "ERR FALSE OSS" (meaning the system state != actual stock status).
+    #"Filtered Rows" = Table.SelectRows(#"Removed Duplicates", each [Flag] = "ERR FALSE OSS"),
+    #"Sorted Rows" = Table.Sort(#"Filtered Rows", {{"On Hand", Order.Descending}}),
+    // Select key columns for output (SKU, Material, Product, On Hand, Cases Sold, Remaining Cases, Inbound Today, States, Flag).
+    #"Removed Other Columns" = Table.SelectColumns(#"Sorted Rows",
+                    {"SKU", "Material", "Product", "On Hand", "Cases Sold", "Remaining Cases",
+                     "Inbound Today", "SKU Maintenance.State", "Recomended State", "Flag"})
+in
+    #"Removed Other Columns"
+// Output: A list of SKUs that are *false OOS* (system says OOS but stock exists). This populates the "FALSE OOS" sheet.
+// Columns include both actual and recommended states for comparison.
+
+// **Query: VP SKU Correction**
+// Purpose: Prepare a detailed list of SKUs needing correction (false OOS) with all relevant attributes, for export.
+let
+    Source = #"FALSE OOS",  // Start from the FALSE OOS query results
+    #"Removed Other Columns" = Table.SelectColumns(Source, {"SKU"}),  // Take just the SKU numbers to correct
+    // Join with full SKU Maintenance to retrieve complete details for those SKUs.
+    #"Merged Queries" = Table.NestedJoin(#"Removed Other Columns", {"SKU"},
+                    #"SKU Maintenance Full (26)", {"SKU"}, "SKU Maintenance Full", JoinKind.LeftOuter),
+    #"Removed Columns" = Table.RemoveColumns(#"Merged Queries", {"SKU"}),
+    #"Expanded SKU Maintenance Full" = Table.ExpandTableColumn(#"Removed Columns", "SKU Maintenance Full",
+                    {"Location", "SKU", "Product", "Loc Name", "Spoken Description", "Starter Qty",
+                     "State", "lang_desc", "Sequence", "Verification"},
+                    {"Location", "SKU", "Product", "Loc Name", "Spoken Description", "Starter Qty",
+                     "State", "lang_desc", "Sequence", "Verification"}),
+    // Include exceptions lookup to possibly exclude certain SKUs from correction if needed.
+    #"Merged Queries1" = Table.NestedJoin(#"Expanded SKU Maintenance Full", {"SKU"},
+                    EXCEPTIONS, {"Exceptions"}, "EXCEPTIONS", JoinKind.LeftOuter),
+    #"Expanded EXCEPTIONS" = Table.ExpandTableColumn(#"Merged Queries1", "EXCEPTIONS",
+                    {"Exceptions"}, {"EXCEPTIONS.Exceptions"}),
+    // Filter out any SKU that appears in the exceptions list (i.e., keep only those where EXCEPTIONS.Exceptions is null).
+    #"Filtered Rows" = Table.SelectRows(#"Expanded EXCEPTIONS", each [EXCEPTIONS.Exceptions] = null)
+in
+    #"Filtered Rows"
+// Output: A detailed table of SKUs that need state correction (false OOS), excluding any listed exceptions.
+// This corresponds to the "VP_SKU_Correction" table, which the VBA exports to CSV (VP SKU Correction.csv).
+
+// **Query: EXCEPTIONS**
+// Purpose: Load a custom exceptions list (from an Excel table in the workbook) for SKUs that should be ignored in false OOS correction.
+let
+    Source = Excel.CurrentWorkbook(){[Name="Table2"]}[Content],
+    #"Changed Type" = Table.TransformColumnTypes(Source, {{"Exceptions", type text}})
+in
+    #"Changed Type"
+// (Likely a simple one-column table named "Table2" in Excel listing SKUs or product names to exclude from auto-correction.)
+
+// **Query: VP OOS**
+// Purpose: List all SKUs currently identified as Out-Of-Stock (OOS) by the logic.
+let
+    Source = Inventory,
+    // Filter the main inventory for rows flagged "OOS" (these are SKUs with recommended state "STOCKOUT" but state mismatch).
+    #"Filtered Rows" = Table.SelectRows(Source, each [Flag] = "OOS"),
+    #"Sorted Rows" = Table.Sort(#"Filtered Rows", {{"On Hand", Order.Descending}}),
+    // Select similar columns as FALSE OOS, but specifically for out-of-stock items.
+    #"Removed Other Columns" = Table.SelectColumns(#"Sorted Rows",
+                    {"SKU", "Material", "Product", "On Hand", "Cases Sold", "Remaining Cases",
+                     "Inbound Today", "SKU Maintenance.State", "Recomended State", "Flag"}),
+    // (Optional filter) Remove any where Cases Sold = 0 (the code shows filtering [Cases Sold] <> 0, meaning likely exclude items that haven’t had any recent activity)
+    #"Filtered Rows1" = Table.SelectRows(#"Removed Other Columns", each ([Cases Sold] <> 0))
+in
+    #"Filtered Rows1"
+// Output: Table of SKUs that are out-of-stock (physically zero on hand) and need to be marked as such (excluding any with zero sales if that filter is intentional).
+// This query feeds into the next step for preparing the import list of OOS SKUs.
+
+// **Query: ExceptionsStandard**
+// Purpose: Load another exceptions list (perhaps for OOS items) from an Excel named range.
+let
+    Source = Excel.CurrentWorkbook(){[Name="Table8"]}[Content],
+    #"Changed Type" = Table.TransformColumnTypes(Source, {{"Exeptions", type any}})
+in
+    #"Changed Type"
+// (Likely a list of SKUs or IDs to exclude from being marked OOS automatically.)
+
+// **Query: VP OOS Import**
+// Purpose: Generate the final list of SKUs to mark as Out-of-Stock in the system, excluding exceptions – this is exported via VBA to "VP OOS Import.csv".
+let
+    Source = #"VP OOS",  // Start with the list of OOS SKUs identified
+    // Join with the ExceptionsStandard list to flag any SKUs that are in the exception list
+    #"Merged Queries" = Table.NestedJoin(Source, {"SKU"},
+                    ExceptionsStandard, {"Exeptions"}, "ExceptionsStandard", JoinKind.LeftOuter),
+    #"Expanded ExceptionsStandard" = Table.ExpandTableColumn(#"Merged Queries", "ExceptionsStandard",
+                    {"Exeptions"}, {"Exeptions"}),
+    // Filter to keep only rows where the exception marker is null (i.e., SKU is NOT in the exception list).
+    #"Filtered Rows" = Table.SelectRows(#"Expanded ExceptionsStandard", each ([Exeptions] = null)),
+    // We only need the SKU column for the import (the system likely only needs SKU to mark OOS).
+    #"Removed Other Columns" = Table.SelectColumns(#"Filtered Rows", {"SKU"}),
+    // Join with full SKU Maintenance to get complete details of these SKUs (perhaps required by the import format).
+    #"Merged Queries1" = Table.NestedJoin(#"Removed Other Columns", {"SKU"},
+                    #"SKU Maintenance Full (26)", {"SKU"}, "SKU Maintenance Full", JoinKind.LeftOuter),
+    #"Removed Columns" = Table.RemoveColumns(#"Merged Queries1", {"SKU"}),
+    #"Expanded SKU Maintenance Full" = Table.ExpandTableColumn(#"Removed Columns", "SKU Maintenance Full",
+                    {"Location", "SKU", "Product", "Loc Name", "Spoken Description", "Starter Qty",
+                     "State", "lang_desc", "Sequence", "Verification"},
+                    {"Location", "SKU", "Product", "Loc Name", "Spoken Description", "Starter Qty",
+                     "State", "lang_desc", "Sequence", "Verification"}),
+    // Sort by Sequence (possibly to maintain a particular order defined in SKU maintenance).
+    #"Sorted Rows" = Table.Sort(#"Expanded SKU Maintenance Full", {{"Sequence", Order.Ascending}}),
+    // Replace "ENABLED" with "STOCKOUT" in the State column for these SKUs, 
+    // because we are preparing to import them as out-of-stock.
+    #"Replaced Value" = Table.ReplaceValue(#"Sorted Rows", "ENABLED", "STOCKOUT", Replacer.ReplaceText, {"State"}),
+    // (Optional) Filter out any SKUs from certain locations if needed (the code filters Location <> "Chilled", 
+    // perhaps focusing only on bulk stock SKUs to mark OOS).
+    #"Filtered Rows1" = Table.SelectRows(#"Replaced Value", each ([Location] <> "Chilled"))
+in
+    #"Filtered Rows1"
+// Output: Detailed table of SKUs to be marked OOS (with their info), excluding exceptions. This corresponds to the "VP_OOS_Import" table exported via macro.
+
+// **Query: Missing Material #**
+// Purpose: Identify any SKUs in the maintenance list that lack a corresponding SAP Material number (i.e., no entry in converter).
+let
+    Source = #"SKU Maintenance Full (26)",
+    // Left join SKU maintenance with Converter on SKU vs Legacy ID to find missing mappings.
+    #"Merged Queries" = Table.NestedJoin(Source, {"SKU"},
+                    #"Converter (26)", {"Legacy Inven ID"}, "Converter", JoinKind.LeftOuter),
+    #"Expanded Converter" = Table.ExpandTableColumn(#"Merged Queries", "Converter",
+                    {"SAP Material #"}, {"Converter.SAP Material #"}),
+    // Filter where the SAP Material # is null, meaning this SKU has no SAP material mapping.
+    #"Filtered Rows" = Table.SelectRows(#"Expanded Converter", each ([Converter.SAP Material #"] = null)),
+    // Select a few identifying columns to report (e.g., SKU, Product, etc.).
+    #"Removed Other Columns" = Table.SelectColumns(#"Filtered Rows",
+                    {"Location", "SKU", "Converter.SAP Material #", "Product", "Loc Name"}),
+    // Further filter for specific locations of interest (Bulk or Chilled only, ignoring others).
+    #"Filtered Rows1" = Table.SelectRows(#"Removed Other Columns", each ([Location] = "Bulk" or [Location] = "Chilled"))
+in
+    #"Filtered Rows1"
+// Output: List of SKUs (limited to Bulk/Chilled) that do not have an SAP material number mapping. This helps maintenance to ensure all SKUs are accounted for in SAP mapping.
+
+// **Query: Missing Converter**
+// Purpose: Identify any SAP Material entries that could not be mapped to a SKU (inverse of above).
+let
+    Source = Excel.Workbook(File.Contents("C:\Inventory\Materials.xlsx"), null, true),
+    SAPExport_Sheet = Source{[Item="SAPUI5 Export",Kind="Sheet"]}[Data],
+    #"Promoted Headers" = Table.PromoteHeaders(SAPExport_Sheet, [PromoteAllScalars=true]),
+    #"Removed Other Columns" = Table.SelectColumns(#"Promoted Headers",
+                    {"Material", "Material Description", "Unrestricted Stock in Alt UoM"}),
+    #"Changed Type" = Table.TransformColumnTypes(#"Removed Other Columns",
+                    {{"Material", Int64.Type}, {"Unrestricted Stock in Alt UoM", Int64.Type}}),
+    // Join SAP data with Converter on Material to get Legacy ID.
+    #"Merged Queries" = Table.NestedJoin(#"Changed Type", {"Material"},
+                    #"Converter (26)", {"SAP Material #"}, "Converter", JoinKind.LeftOuter),
+    #"Expanded Converter" = Table.ExpandTableColumn(#"Merged Queries", "Converter",
+                    {"Legacy Inven ID", "SAP Material #"}, {"Converter.Legacy Inven ID", "Converter.SAP Material #"}),
+    // Join with SKU Maintenance on Legacy ID to get SKU.
+    #"Merged Queries1" = Table.NestedJoin(#"Expanded Converter", {"Converter.Legacy Inven ID"},
+                    #"SKU Maintenance", {"SKU"}, "SKU Maintenance", JoinKind.LeftOuter),
+    #"Expanded SKU Maintenance" = Table.ExpandTableColumn(#"Merged Queries1", "SKU Maintenance",
+                    {"SKU", "Product", "State"}, {"SKU Maintenance.SKU", "SKU Maintenance.Product", "SKU Maintenance.State"}),
+    #"Reordered Columns" = Table.ReorderColumns(#"Expanded SKU Maintenance",
+                    {"SKU Maintenance.SKU", "SKU Maintenance.Product", "Material", "Material Description",
+                     "Converter.Legacy Inven ID", "Converter.SAP Material #", "Unrestricted Stock in Alt UoM"}),
+    // Filter where SKU is null – meaning this material is not linked to any SKU in maintenance.
+    #"Filtered Rows" = Table.SelectRows(#"Reordered Columns", each ([SKU Maintenance.SKU] = null)),
+    #"Sorted Rows" = Table.Sort(#"Filtered Rows", {{"Unrestricted Stock in Alt UoM", Order.Descending}}),
+    // Reorder and then filter where Legacy Inven ID is null (meaning completely unmapped in converter too).
+    #"Reordered Columns1" = Table.ReorderColumns(#"Sorted Rows",
+                    {"Converter.Legacy Inven ID", "Converter.SAP Material #", "Material", "Material Description", "Unrestricted Stock in Alt UoM"}),
+    #"Filtered Rows1" = Table.SelectRows(#"Reordered Columns1", each ([Converter.Legacy Inven ID] = null)),
+    // Select final columns to report for missing converter entries.
+    #"Removed Other Columns1" = Table.SelectColumns(#"Filtered Rows1",
+                    {"Material", "Material Description", "Unrestricted Stock in Alt UoM"}),
+    // (Optional) join with Missing Material # query on Material Description to cross-check if those products exist in SKU list.
+    #"Merged Queries2" = Table.NestedJoin(#"Removed Other Columns1", {"Material Description"},
+                    #"Missing Material #", {"Product"}, "Missing Material #", JoinKind.LeftOuter)
+in
+    #"Merged Queries2"
+// Output: List of materials from SAP that have no corresponding SKU (i.e., not in the converter or maintenance list). 
+// This helps identify new items in SAP that need to be added to the SKU master or converter mapping.
+
+// **Query: Inventory Report**
+// Purpose: Compose the final output for the "Inventory Report" sheet by enriching the Inventory data with additional info (e.g., package details).
+let
+    Source = Inventory,  -- Begin with the main combined inventory table.
+    // Join with a "DIA" query (assumed to be a reference table containing additional product attributes like Package, Trademark, Item codes, etc.).
+    #"Merged Queries" = Table.NestedJoin(Source, {"SKU"}, DIA, {"Inventory ID"}, "DIA", JoinKind.LeftOuter),
+    #"Expanded DIA" = Table.ExpandTableColumn(#"Merged Queries", "DIA",
+                    {"Package", "Trademark", "Item", "Inventory ID"}, {"Package", "Trademark", "Item", "Inventory ID"}),
+    // Remove any columns not needed in the final report, focusing on key fields for reporting.
+    #"Removed Other Columns" = Table.SelectColumns(#"Expanded DIA",
+                    {"SKU", "Material", "Product", "On Hand", "Cases Sold", "Inbound Today", "All Receivers",
+                     "Package", "Trademark", "Item"}),
+    // Join with VP Locations Report to bring in Remaining Cases (if any product wasn't in VP Locations, this ensures even 0 appears after null replacement).
+    #"Merged Queries1" = Table.NestedJoin(#"Removed Other Columns", {"SKU"},
+                    #"VP Locations Report", {"SKU Maintenance.SKU"}, "VP Locations Report", JoinKind.LeftOuter),
+    #"Expanded VP Locations Report" = Table.ExpandTableColumn(#"Merged Queries1", "VP Locations Report",
+                    {"Remaining Cases"}, {"Remaining Cases"}),
+    // Replace null Remaining Cases with 0 for products not in VP Locations data.
+    #"Replaced Value" = Table.ReplaceValue(#"Expanded VP Locations Report", null, 0, Replacer.ReplaceValue, {"Remaining Cases"}),
+    // Add a custom column to calculate the difference between On Hand and Remaining Cases (perhaps to see if any on-hand stock is not in forward pick).
+    #"Added Custom" = Table.AddColumn(#"Replaced Value", "+/-", each [On Hand] - [Remaining Cases]),
+    //"+" indicates excess in bulk storage vs forward, "-" indicates forward pick has more than bulk reported (could indicate data issues).
+    #"Reordered Columns" = Table.ReorderColumns(#"Added Custom",
+                    {"SKU", "Material", "Product", "On Hand", "Cases Sold", "+/-", "Inbound Today", "All Receivers",
+                     "Package", "Trademark", "Item"}),
+    // Filter out any placeholder/dummy SKU (SKU 4504 is likely a dummy entry used in logic, exclude from final report).
+    #"Filtered Rows" = Table.SelectRows(#"Reordered Columns", each ([SKU] <> 4504)),
+    // Remove any duplicate rows if present (similar distinct step by Product and On Hand, to ensure unique listing).
+    #"Removed Duplicates" = Table.Distinct(#"Filtered Rows", {"Product", "On Hand"}),
+    // Remove the "Remaining Cases" column as it may not be needed in the final printed report (since we have +/- calculated).
+    #"Removed Columns" = Table.RemoveColumns(#"Removed Duplicates", {"Remaining Cases"})
+in
+    #"Removed Columns"
+// The Inventory Report query produces the final dataset for reporting, including packaging and item codes from the DIA reference.
+// This table is what populates the "Inventory Report" worksheet that is copied and distributed daily.
